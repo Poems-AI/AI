@@ -1,0 +1,214 @@
+from poemsai.config import get_config_value
+from enum import auto, Enum
+import numpy as np
+import pandas as pd
+from pathlib import Path
+import re
+from typing import List
+
+
+__all__ = ['Lang', 'lang_to_str', 'DataSource', 'get_ds_path', 'get_text_files', 'get_data_sources',
+           'SplitterFactory', 'PoemsDfReader', 'PoemsFileReader', 'ComposedPoemsReader', 
+           'ReaderFactory', 'PoemsWriter', 'merge_poems'
+]
+
+
+class Lang(Enum):
+    English = "en"
+    Spanish = "es"
+
+
+def lang_to_str(lang:Lang):
+    return lang.value
+
+
+class DataSource(Enum):
+    Marcos = auto()
+    Kaggle = auto()
+
+
+def get_ds_path(lang:Lang, source:DataSource):
+    assert source in (DataSource.Marcos, DataSource.Kaggle), 'Not implemented for given DataSource'
+    if source == DataSource.Marcos:
+        return Path(f'dataset/marcos_de_la_fuente.txt/{lang_to_str(lang)}.txt')
+    elif source == DataSource.Kaggle:
+        relative_path = 'poemsdataset' if lang == Lang.English else 'spanish-poetry-dataset/poems.csv'
+        return Path(get_config_value('KAGGLE_DS_ROOT'))/relative_path
+
+
+def get_text_files(path:Path):
+    result = []
+    if not path.is_dir(): return result
+    
+    for child in path.iterdir():
+        if child.is_dir():
+            result.extend(get_text_files(child))
+        elif (child.suffix.lower() == '.txt'):
+            result.append(child)
+    return result
+
+    
+class PoemsFileList:
+    def __init__(self, paths:List[Path]):
+        self.paths = paths
+        
+    def __iter__(self):
+        return iter(self.paths)
+    
+    def __len__(self):
+        return len(self.paths)
+    
+    @classmethod
+    def from_root_path(cls, root_path:Path, poem_titles_to_ignore:List[str]=None):
+        if poem_titles_to_ignore is None: poem_titles_to_ignore = []
+        paths = [p for p in get_text_files(root_path) if p.name not in poem_titles_to_ignore]
+        return cls(paths)
+
+
+class PoemsDf:
+    def __init__(self, df, poems_column):
+        self.df = df
+        self.poems_column = poems_column
+    
+    def __len__(self):
+        return len(self.df)
+    
+    @classmethod
+    def from_csv_path(cls, csv_path, poems_column):
+        df = pd.read_csv(csv_path)
+        return cls(df, poems_column)
+    
+    
+def get_data_sources(lang:Lang, source:DataSource):
+    path = get_ds_path(lang, source)
+    
+    # TODO: maybe the type (files, DataFrame, ...) could be inferred from the path, 
+    # but it'd be just a heuristic at best
+    if lang == Lang.Spanish:
+        if source == DataSource.Marcos:
+            poems_to_ignore = ['other_authors.es.txt']
+            return PoemsFileList.from_root_path(path, poem_titles_to_ignore=poems_to_ignore)
+        else:
+            return PoemsDf.from_csv_path(path, 'content')
+    elif lang == Lang.English:
+        return PoemsFileList.from_root_path(path)
+
+
+class PoemsFileListSplitterByParent:
+    def split(self, poems_list:PoemsFileList, valid_pct=0.2):
+        all_train_files, all_valid_files = [], []
+        parent_paths = set(fp.parent for fp in poems_list)
+        poems_set = set(poems_list)
+        rng = np.random.default_rng(seed=get_config_value('RNG_SEED'))
+
+        for parent in parent_paths:
+            # For any directory with at least two children, we choose at least 
+            # one file for validation set, independently of valid_pct
+            txt_files_in_parent = set(get_text_files(parent)).intersection(poems_set)# , poems_list.poem_titles_to_ignore)
+            num_valid = (0 if len(txt_files_in_parent) <= 1 
+                         else max(1, round(valid_pct * len(txt_files_in_parent))))
+            valid_files_idxs = rng.choice(len(txt_files_in_parent), size=num_valid, replace=False)
+            files_arr = np.array(list(txt_files_in_parent))
+            valid_files = files_arr[valid_files_idxs]
+            train_files = txt_files_in_parent - set(valid_files)
+            all_valid_files.extend(valid_files)
+            all_train_files.extend(train_files)
+        
+        return PoemsFileList(all_train_files), PoemsFileList(all_valid_files)
+    
+    
+class PoemsDfSplitter:        
+    def split(self, poems_list:PoemsDf, valid_pct=0.2):
+        df = poems_list.df
+        all_idxs = list(range(len(df)))
+        num_valid = round(valid_pct * len(all_idxs))
+        rng = np.random.default_rng(seed=get_config_value('RNG_SEED'))
+        valid_idxs = rng.choice(len(all_idxs), size=num_valid, replace=False)
+        train_idxs = list(set(all_idxs) - set(valid_idxs))
+        train_rows = df.iloc[train_idxs]
+        valid_rows = df.iloc[valid_idxs]
+        return PoemsDf(train_rows, poems_list.poems_column), PoemsDf(valid_rows, poems_list.poems_column)
+
+    
+class SplitterFactory:
+    def get_splitter_for(self, data):
+        if isinstance(data, PoemsFileList):
+            return PoemsFileListSplitterByParent()
+        elif isinstance(data, PoemsDf):
+            return PoemsDfSplitter()
+        return None
+
+
+class PoemsDfReader():
+    def __init__(self, poems_df:PoemsDf):
+        self.poems_df = poems_df
+    
+    def __iter__(self):
+        poem_getter = lambda row: row[1][self.poems_df.poems_column]
+        df = self.poems_df.df
+        return (poem_getter(row).split('\n') for row in df.iterrows() if isinstance(poem_getter(row), str))
+
+    
+class PoemsFileReader():
+    def __init__(self, poems_list:PoemsFileList):
+        self.poems_list = poems_list
+    
+    def __iter__(self):
+        return FilesIterator(list(self.poems_list))
+    
+    
+class FilesIterator():
+    def __init__(self, paths):
+        self.paths = paths
+        self.idx = 0
+        
+    def __next__(self):
+        if self.idx < len(self.paths):
+            path = self.paths[self.idx]
+            self.idx += 1
+            with open(path, 'r') as f:
+                text = f.readlines()
+            return text    
+        raise StopIteration 
+
+        
+class ComposedPoemsReader:
+    def __init__(self, readers):
+        self.readers = readers
+        
+    def __iter__(self):
+        return (poem for reader in self.readers for poem in reader)
+
+
+class ReaderFactory:
+    def get_reader_for(self, data):
+        if isinstance(data, PoemsFileList):
+            return PoemsFileReader(data)
+        elif isinstance(data, PoemsDf):
+            return PoemsDfReader(data)
+        return None
+
+
+class PoemsWriter():
+    def __init__(self, open_file, drop_multispace=False):
+        self.meaningful_chars_pattern = re.compile("[a-zA-Z0-9]")
+        self.multispace_pattern = re.compile(" {2,}") if drop_multispace else None
+        self.file = open_file
+        
+    def write_verse(self, verse, endofpoem=False):
+        if self.meaningful_chars_pattern.search(verse) is None:
+            return
+        if self.multispace_pattern is not None:
+            verse = self.multispace_pattern.sub(" ", verse)
+        verse = verse.strip()
+        if len(verse) > 0:
+            line_end = "<endofpoem>\n" if endofpoem else "\\n\n"
+            self.file.write(f'{verse} {line_end}')
+
+                    
+def merge_poems(poems_reader, poems_writer):
+    for poem_lines in poems_reader:
+        for line in poem_lines[:-1]:
+            poems_writer.write_verse(line)
+        if len(poem_lines) > 0:
+            poems_writer.write_verse(poem_lines[-1], endofpoem=True)
