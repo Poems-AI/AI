@@ -1,6 +1,9 @@
+from dataclasses import asdict, dataclass
 from poemsai.config import get_config_value
 from enum import auto, Enum
+import json
 import numpy as np
+import os
 import pandas as pd
 from pathlib import Path
 import re
@@ -9,7 +12,7 @@ from typing import List
 
 __all__ = ['Lang', 'lang_to_str', 'DataSource', 'get_ds_path', 'get_text_files', 'get_data_sources',
            'SplitterFactory', 'PoemsDfReader', 'PoemsFileReader', 'ComposedPoemsReader', 
-           'ReaderFactory', 'PoemsWriter', 'merge_poems'
+           'ReaderFactory', 'PoemsFileConfig', 'PoemsFileWriter', 'merge_poems', 
 ]
 
 
@@ -189,26 +192,69 @@ class ReaderFactory:
         return None
 
 
-class PoemsWriter():
-    def __init__(self, open_file, drop_multispace=False):
-        self.meaningful_chars_pattern = re.compile("[a-zA-Z0-9]")
-        self.multispace_pattern = re.compile(" {2,}") if drop_multispace else None
+class VerseGrouping(Enum):
+    OneVerseBySequence = auto()
+    OnePoemBySequence = auto()
+
+
+@dataclass
+class PoemsFileConfig:
+    remove_multispaces:bool = True
+    beginning_of_verse_token:str = ''
+    end_of_verse_token:str = '\\n'
+    end_of_poem_token:str = ''
+    n_prev_verses_terminations:int = 0
+    verse_grouping:VerseGrouping = VerseGrouping.OneVerseBySequence
+
+    def save(self, path):
+        with open(path, "w") as f:
+            json.dump(asdict(self), f, default=lambda x: x.value)
+
+    @classmethod
+    def from_json(cls, path):
+        with open(path) as f:
+            attrs_dict = json.load(f)
+        attrs_dict['verse_grouping'] = VerseGrouping(attrs_dict['verse_grouping'])
+        return cls(**attrs_dict)
+
+
+class PoemsFileWriter():
+    def __init__(self, open_file, conf:PoemsFileConfig):
         self.file = open_file
+        self.conf = conf
+        self.meaningful_chars_pattern = re.compile("[a-zA-Z0-9]")
+        self.multispace_pattern = re.compile(" {2,}") if conf.remove_multispaces else None
         
-    def write_verse(self, verse, endofpoem=False):
+    def _write_verse(self, verse, endofpoem=False, prev_verses_last_word:List[str]=None):
         if self.meaningful_chars_pattern.search(verse) is None:
             return
         if self.multispace_pattern is not None:
             verse = self.multispace_pattern.sub(" ", verse)
         verse = verse.strip()
+        last_word = ''
+
         if len(verse) > 0:
-            line_end = "<endofpoem>\n" if endofpoem else "\\n\n"
-            self.file.write(f'{verse} {line_end}')
+            last_word = verse.split(' ')[-1]
+            verse_end = self.conf.end_of_verse_token
+            if endofpoem: verse_end += self.conf.end_of_poem_token
+            if endofpoem or (self.conf.verse_grouping == VerseGrouping.OneVerseBySequence):
+                verse_end += os.linesep
+            prev_ends = (' '.join(prev_verses_last_word[-self.conf.n_prev_verses_terminations:])
+                         if self.conf.n_prev_verses_terminations > 0
+                         else '')
+            encoded_verse = f'{prev_ends}{self.conf.beginning_of_verse_token}{verse} {verse_end}'
+            self.file.write(encoded_verse)
+        return last_word
+
+    def write_poem(self, poem_lines:List[str]):
+        verses_endings = []
+        for line in poem_lines[:-1]:
+            last_word = self._write_verse(line, prev_verses_last_word=verses_endings)
+            if last_word != '': verses_endings.append(last_word)
+        if len(poem_lines) > 0:
+            self._write_verse(poem_lines[-1], endofpoem=True, prev_verses_last_word=verses_endings)
 
                     
 def merge_poems(poems_reader, poems_writer):
     for poem_lines in poems_reader:
-        for line in poem_lines[:-1]:
-            poems_writer.write_verse(line)
-        if len(poem_lines) > 0:
-            poems_writer.write_verse(poem_lines[-1], endofpoem=True)
+        poems_writer.write_poem(poem_lines)
