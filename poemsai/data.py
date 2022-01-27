@@ -7,12 +7,13 @@ import os
 import pandas as pd
 from pathlib import Path
 import re
-from typing import List
+from typing import List, Tuple
 
 
 __all__ = ['Lang', 'lang_to_str', 'DataSource', 'get_ds_path', 'get_text_files', 'get_data_sources',
-           'SplitterFactory', 'PoemsDfReader', 'PoemsFileReader', 'ComposedPoemsReader', 
-           'ReaderFactory', 'PoemsFileConfig', 'PoemsFileWriter', 'merge_poems', 
+           'SplitterFactory', 'data_splits_to_df', 'PoemsDfReader', 'PoemsFileReader', 
+           'ComposedPoemsReader', 'ReaderFactory', 'PoemsFileConfig', 'PoemsFileWriter', 
+           'merge_poems', 
 ]
 
 
@@ -30,13 +31,18 @@ class DataSource(Enum):
     Kaggle = auto()
 
 
+POEM_NAME_DF_COL = 'Poem name'
+POEM_LOCATION_DF_COL = 'Location'
+
+
 def get_ds_path(lang:Lang, source:DataSource):
     assert source in (DataSource.Marcos, DataSource.Kaggle), 'Not implemented for given DataSource'
     if source == DataSource.Marcos:
-        return Path(f'dataset/marcos_de_la_fuente.txt/{lang_to_str(lang)}.txt')
+        path = Path(f'dataset/marcos_de_la_fuente.txt/{lang_to_str(lang)}.txt')
     elif source == DataSource.Kaggle:
         relative_path = 'poemsdataset' if lang == Lang.English else 'spanish-poetry-dataset/poems.csv'
-        return Path(get_config_value('KAGGLE_DS_ROOT'))/relative_path
+        path = Path(get_config_value('KAGGLE_DS_ROOT'))/relative_path
+    return path.resolve()
 
 
 def get_text_files(path:Path):
@@ -50,7 +56,22 @@ def get_text_files(path:Path):
             result.append(child)
     return result
 
-    
+
+def _replace_ds_root_w_placeholder(path_str:str):
+    path_str = path_str.replace(os.sep, '/')
+    ds_roots_keys = ['KAGGLE_DS_ROOT', 'OWN_DS_ROOT']
+    ds_roots = [(get_config_value(key), key) for key in ds_roots_keys]
+    for ds_root, ds_root_key in ds_roots:
+        ds_root = str(Path(ds_root).resolve()).replace(os.sep, '/')
+        try:
+            ds_root_idx = path_str.index(ds_root)
+        except ValueError:
+            ds_root_idx = None
+        if ds_root_idx == 0:
+            return path_str.replace(ds_root, f'[{ds_root_key}]')
+    return path_str
+
+
 class PoemsFileList:
     def __init__(self, paths:List[Path]):
         self.paths = paths
@@ -61,6 +82,13 @@ class PoemsFileList:
     def __len__(self):
         return len(self.paths)
     
+    def to_metadata_df(self):
+        df = pd.DataFrame(columns=[POEM_NAME_DF_COL, POEM_LOCATION_DF_COL])
+        _fn_to_poem_name = lambda filename: filename.split('.')[0]
+        df[POEM_NAME_DF_COL] = [_fn_to_poem_name(p.name) for p in self.paths]
+        df[POEM_LOCATION_DF_COL] = [_replace_ds_root_w_placeholder(str(p)) for p in self.paths]
+        return df
+
     @classmethod
     def from_root_path(cls, root_path:Path, poem_titles_to_ignore:List[str]=None):
         if poem_titles_to_ignore is None: poem_titles_to_ignore = []
@@ -69,17 +97,26 @@ class PoemsFileList:
 
 
 class PoemsDf:
-    def __init__(self, df, poems_column):
+    def __init__(self, df, poems_column, name_column, origin):
         self.df = df
         self.poems_column = poems_column
+        self.name_column = name_column
+        self.origin = origin
     
     def __len__(self):
         return len(self.df)
     
+    def to_metadata_df(self):
+        df = pd.DataFrame(columns=[POEM_NAME_DF_COL, POEM_LOCATION_DF_COL])
+        df[POEM_NAME_DF_COL] = self.df[self.name_column]
+        df[POEM_LOCATION_DF_COL] = [f'{_replace_ds_root_w_placeholder(str(self.origin))}[{i}]' 
+                                    for i in range(len(self.df))]
+        return df
+
     @classmethod
-    def from_csv_path(cls, csv_path, poems_column):
+    def from_csv_path(cls, csv_path, poems_column, name_column):
         df = pd.read_csv(csv_path)
-        return cls(df, poems_column)
+        return cls(df, poems_column, name_column, csv_path)
     
     
 def get_data_sources(lang:Lang, source:DataSource):
@@ -92,7 +129,7 @@ def get_data_sources(lang:Lang, source:DataSource):
             poems_to_ignore = ['other_authors.es.txt']
             return PoemsFileList.from_root_path(path, poem_titles_to_ignore=poems_to_ignore)
         else:
-            return PoemsDf.from_csv_path(path, 'content')
+            return PoemsDf.from_csv_path(path, 'content', 'title')
     elif lang == Lang.English:
         return PoemsFileList.from_root_path(path)
 
@@ -130,7 +167,8 @@ class PoemsDfSplitter:
         train_idxs = list(set(all_idxs) - set(valid_idxs))
         train_rows = df.iloc[train_idxs]
         valid_rows = df.iloc[valid_idxs]
-        return PoemsDf(train_rows, poems_list.poems_column), PoemsDf(valid_rows, poems_list.poems_column)
+        poems_df_args = [poems_list.poems_column, poems_list.name_column, poems_list.origin]
+        return PoemsDf(train_rows, *poems_df_args), PoemsDf(valid_rows, *poems_df_args)
 
     
 class SplitterFactory:
@@ -140,6 +178,16 @@ class SplitterFactory:
         elif isinstance(data, PoemsDf):
             return PoemsDfSplitter()
         return None
+
+
+def data_splits_to_df(data_splits:Tuple[List,str]):
+    dfs = []
+    for split, split_name in data_splits:
+        for ds in split:
+            ds_df = ds.to_metadata_df()
+            ds_df['Split'] = [split_name] * len(ds_df)
+            dfs.append(ds_df)
+    return pd.concat(dfs, ignore_index=True)
 
 
 class PoemsDfReader():
@@ -224,17 +272,18 @@ class PoemsFileWriter():
         self.conf = conf
         self.meaningful_chars_pattern = re.compile("[a-zA-Z0-9]")
         self.multispace_pattern = re.compile(" {2,}") if conf.remove_multispaces else None
+        self.eol_punctuation_pattern = re.compile('[ .,;\?\!\-\\\:]+$')
         
     def _write_verse(self, verse, endofpoem=False, prev_verses_last_word:List[str]=None):
+        last_word = ''
         if self.meaningful_chars_pattern.search(verse) is None:
-            return
+            return last_word
         if self.multispace_pattern is not None:
             verse = self.multispace_pattern.sub(" ", verse)
         verse = verse.strip()
-        last_word = ''
 
         if len(verse) > 0:
-            last_word = verse.split(' ')[-1]
+            last_word = self.eol_punctuation_pattern.sub('', verse).split(' ')[-1]
             verse_end = self.conf.end_of_verse_token
             if endofpoem: verse_end += self.conf.end_of_poem_token
             if endofpoem or (self.conf.verse_grouping == VerseGrouping.OneVerseBySequence):
