@@ -164,12 +164,13 @@ def eval_model_with_metrics(model, input_filepath, tokenizer, compute_metrics=co
 class MetadataLessLoss:
     "Mask the tokens of the target that are considered metadata before passing them to `inner_loss`."
     def __init__(self, inner_loss:Callable, begin_verse_id=None, end_verse_id=None, 
-                 end_poem_id=None, ignore_index=-100):
+                 end_poem_id=None, ignore_index=-100, flatten_inner_loss_args=False):
         self.inner_loss = inner_loss
         self.begin_verse_id = begin_verse_id
         self.end_verse_id = end_verse_id
         self.end_poem_id = end_poem_id
         self.ignore_index = ignore_index
+        self.flatten_inner_loss_args = flatten_inner_loss_args
 
     def __call__(self, preds, target):
         target = target.clone()
@@ -226,6 +227,10 @@ class MetadataLessLoss:
             for j,k in ignored_positions_batch:
                 target[i,j:k+1] = self.ignore_index
 
+        if self.flatten_inner_loss_args:
+            preds = preds.view(-1, preds.shape[-1])
+            target = target.view(-1)
+
         return self.inner_loss(preds, target)
 
 
@@ -236,12 +241,13 @@ class MetadataLessLossFast:
     end-poem tags is not covered.
     """
     def __init__(self, inner_loss:Callable, begin_verse_id=None, end_verse_id=None, 
-                 end_poem_id=None, ignore_index=-100):
+                 end_poem_id=None, ignore_index=-100, flatten_inner_loss_args=False):
         self.inner_loss = inner_loss
         self.begin_verse_id = begin_verse_id
         self.end_verse_id = end_verse_id
         self.end_poem_id = end_poem_id
         self.ignore_index = ignore_index
+        self.flatten_inner_loss_args = flatten_inner_loss_args
 
     def __call__(self, preds, target):
         target = target.clone()
@@ -281,4 +287,8 @@ class MetadataLessLossFast:
             for j,k in zip (slice_begin_positions, slice_end_positions):
                 target[i,j:k+1] = self.ignore_index
         
+        if self.flatten_inner_loss_args:
+            preds = preds.view(-1, preds.shape[-1])
+            target = target.view(-1)
+
         return self.inner_loss(preds, target)
