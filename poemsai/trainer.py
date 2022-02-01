@@ -2,7 +2,7 @@ import collections
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, IterableDataset
-from transformers import logger, Trainer
+from transformers import Trainer
 from transformers.deepspeed import deepspeed_init
 from transformers.file_utils import (
     CONFIG_NAME,
@@ -23,6 +23,7 @@ from transformers.trainer_pt_utils import (
     nested_numpify,
     nested_truncate,
 )
+from transformers.utils import logging
 from typing import Callable, List, Optional
 
 
@@ -30,6 +31,9 @@ if is_torch_tpu_available():
     import torch_xla.core.xla_model as xm
     import torch_xla.debug.metrics as met
     import torch_xla.distributed.parallel_loader as pl
+
+
+logger = logging.get_logger(__name__)
 
 
 class PoemsTrainer(Trainer):
