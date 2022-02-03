@@ -1,3 +1,4 @@
+from poemsai.hf_utils import model_to_url
 import os
 from pathlib import Path
 
@@ -5,7 +6,7 @@ __all__ = ['download_checkpoint_from_hf_hub', 'commit_checkpoint_to_hf_hub']
 
 
 def download_checkpoint_from_hf_hub(model_name, user, pwd):
-    model_url = model_to_url(custom_model_name, user, pwd)
+    model_url = model_to_url(model_name, user, pwd)
     get_ipython().system("git clone {model_url}")
 
 
