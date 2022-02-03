@@ -19,7 +19,7 @@ def commit_checkpoint_to_hf_hub(model_name, user, checkpoint_path, message='Upda
     if not repo_path.exists():
         repo_path.mkdir()
         model_url = model_to_url(model_name, user, pwd=pwd)
-        shell.system("!git clone {model_url} $repo_path")
+        shell.system("git clone {model_url} $repo_path")
     shell.system("cp {checkpoint_path}/* $repo_path")
     shell.run_line_magic('cd', str(repo_path))
     shell.system("git add .")
