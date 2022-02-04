@@ -7,10 +7,13 @@ import tempfile
 from transformers import default_data_collator, Trainer, TrainingArguments
 from transformers.trainer_pt_utils import nested_concat, nested_numpify, nested_truncate#
 import torch
+import torch.nn.functional as F
 from typing import Callable
 
 
-__all__ = ['compute_lm_metrics', 'eval_model_with_metrics', 'MetadataLessLoss']
+__all__ = ['compute_lm_metrics', 'eval_model_with_metrics', 'MetadataLessLoss', 
+           'preprocess_logits_for_metadataless_loss', 'preprocess_logits_for_accuracy', 
+           'get_compute_metrics_metadataless']
 
 
 def compute_lm_metrics(eval_preds, expect_preds=False):
@@ -162,7 +165,7 @@ def eval_model_with_metrics(model, input_filepath, tokenizer, compute_metrics=co
 
 
 class MetadataLessLoss:
-    "Mask the tokens of the target that are considered metadata before passing them to `inner_loss`."
+    "Masks the tokens of the target that are considered metadata before passing them to `inner_loss`."
     def __init__(self, inner_loss:Callable, begin_verse_id=None, end_verse_id=None, 
                  end_poem_id=None, ignore_index=-100, flatten_inner_loss_args=False):
         self.inner_loss = inner_loss
@@ -292,3 +295,32 @@ class MetadataLessLossFast:
             target = target.view(-1)
 
         return self.inner_loss(preds, target)
+
+
+def preprocess_logits_for_metadataless_loss(logits, labels):
+    labels = labels[:, 1:]
+    logits = logits[:, :-1]
+    return -torch.gather(F.log_softmax(logits, dim=-1), -1, labels[..., None]).squeeze(-1)
+
+
+def preprocess_logits_for_accuracy(logits, labels):
+    return logits.argmax(dim=-1)
+
+
+def get_compute_metrics_metadataless(**loss_init_kargs):
+    "It returns a functon that computes the `MetadataLessLoss` like a HuggingFace metric."
+    ignore_index = -100
+    def _inner_loss(preds, target): 
+        return preds[target != ignore_index].mean()
+    loss_fn = MetadataLessLoss(_inner_loss, ignore_index=ignore_index, **loss_init_kargs)
+    
+    def compute_metadataless_loss(eval_preds):
+        # preds just contains the value of the log softmax of the logits for the entries given
+        # by the labels, so it has the same rank as labels.
+        preds, labels = eval_preds
+        # preds have been already truncated (last item of the sequence), by 
+        # preprocess_logits_for_metadataless_loss so we only need to shift the labels
+        loss = loss_fn(torch.Tensor(preds), torch.Tensor(labels[:, 1:]))
+        return {'Metadata-less val. loss': loss}
+    
+    return compute_metadataless_loss
