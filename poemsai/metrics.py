@@ -13,7 +13,7 @@ from typing import Callable
 
 __all__ = ['compute_lm_metrics', 'eval_model_with_metrics', 'MetadataLessLoss', 
            'preprocess_logits_for_metadataless_loss', 'preprocess_logits_for_accuracy', 
-           'get_compute_metrics_metadataless']
+           'compute_metrics_accuracy', 'get_compute_metrics_metadataless']
 
 
 def compute_lm_metrics(eval_preds, expect_preds=False):
