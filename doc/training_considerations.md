@@ -52,11 +52,11 @@ tr_args = TrainingArguments(num_train_epochs=30, learning_rate=5e-5),
 trainer = Trainer(model=model, args=tr_args, ...)
 trainer.train()
 # learning rate is close to 0, much lower than 5e-5, at the end
-model.push_to_hub('https://huggingface.co/davidlf/mymodel')
+model.push_to_hub('https://huggingface.co/myuser/mymodel')
 # End of session
 
 # ...A day after, in a different session
-model = AutoModelForCausalLM.from_pretrained('davidlf/mymodel')
+model = AutoModelForCausalLM.from_pretrained('myuser/mymodel')
 tr_args = TrainingArguments(num_train_epochs=10, learning_rate=5e-5),
 trainer = Trainer(model=model, args=tr_args, ...)
 trainer.train()

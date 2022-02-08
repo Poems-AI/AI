@@ -13,8 +13,8 @@ However, if you want to save a model in the middle of a training run, in order t
 to call our method `nb_utils.commit_checkpoint_to_hf_hub`; of course, this will also push the tokenizer and the model. For instance:
 
 ```
-commit_checkpoint_to_hub('gpt2-poems.en', 'davidlf', get_last_checkpoint('./checkpoints'),
-                          message='Save checkpoint at 10 epochs', pwd='[your_huggingface_password]')
+commit_checkpoint_to_hf_hub('gpt2-poems.en', 'YOUR_HF_USER', get_last_checkpoint('./checkpoints'),
+                            message='Save checkpoint at 10 epochs', pwd='YOUR_HF_PASSWORD')
 ```
 
 To resume a training run from a checkpoint you stored in the Hub:
@@ -23,9 +23,9 @@ To resume a training run from a checkpoint you stored in the Hub:
 
 ```
 custom_model_name = 'gpt2-poems.en'
-HF_USER = 'davidlf'
-hf_pwd = 'your_hf_password'
-!git clone {model_to_url(custom_model_name, HF_USER, hf_pwd)}
+HF_USER = 'YOUR_HF_USER'
+HF_PWD = 'YOUR_HF_PASSWORD'
+!git clone {model_to_url(custom_model_name, HF_USER, HF_PWD)}
 ```
 
 2) Create the Trainer as always
