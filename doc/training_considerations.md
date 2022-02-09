@@ -72,4 +72,4 @@ In conclusion, the lesson to learn from all the above is that you should either:
   - Use a constant learning rate scheduler. For this, set the `lr_scheduler_type` param of `TrainingArguments` to
    `SchedulerType.CONSTANT` or `SchedulerType.CONSTANT_WITH_WARMUP`. In the latter case, don't 
     forget to set also the parameter `warmup_steps`.
-  - Pass your own scheduler to Trainer.\_\_init\_\_. The parameter `optimizer` is a size 2 tuple, with the optimizer being the first element and the scheduler, the second one.
+  - Pass your own scheduler to Trainer.\_\_init\_\_. The parameter `optimizers` is a size 2 tuple, with the optimizer being the first element and the scheduler, the second one.
