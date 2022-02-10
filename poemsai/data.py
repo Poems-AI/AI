@@ -109,7 +109,7 @@ class PoemsDf:
     def to_metadata_df(self):
         df = pd.DataFrame(columns=[POEM_NAME_DF_COL, POEM_LOCATION_DF_COL])
         df[POEM_NAME_DF_COL] = self.df[self.name_column]
-        df[POEM_LOCATION_DF_COL] = [f'{_replace_ds_root_w_placeholder(str(self.origin))}[{i}]' 
+        df[POEM_LOCATION_DF_COL] = [f'{_replace_ds_root_w_placeholder(str(self.origin))}[{self.poems_column}:{i}]' 
                                     for i in range(len(self.df))]
         return df
 
@@ -274,7 +274,7 @@ class PoemsFileWriter():
         self.multispace_pattern = re.compile(" {2,}") if conf.remove_multispaces else None
         self.eol_punctuation_pattern = re.compile('[ .,;\?\!\-\\\:]+$')
         
-    def _write_verse(self, verse, endofpoem=False, prev_verses_last_word:List[str]=None):
+    def write_verse(self, verse, endofpoem=False, prev_verses_last_word:List[str]=None):
         last_word = ''
         if self.meaningful_chars_pattern.search(verse) is None:
             return last_word
@@ -298,10 +298,10 @@ class PoemsFileWriter():
     def write_poem(self, poem_lines:List[str]):
         verses_endings = []
         for line in poem_lines[:-1]:
-            last_word = self._write_verse(line, prev_verses_last_word=verses_endings)
+            last_word = self.write_verse(line, prev_verses_last_word=verses_endings)
             if last_word != '': verses_endings.append(last_word)
         if len(poem_lines) > 0:
-            self._write_verse(poem_lines[-1], endofpoem=True, prev_verses_last_word=verses_endings)
+            self.write_verse(poem_lines[-1], endofpoem=True, prev_verses_last_word=verses_endings)
 
                     
 def merge_poems(poems_reader, poems_writer):
