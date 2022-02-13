@@ -110,7 +110,7 @@ class PoemsDf:
         df = pd.DataFrame(columns=[POEM_NAME_DF_COL, POEM_LOCATION_DF_COL])
         df[POEM_NAME_DF_COL] = self.df[self.name_column]
         df[POEM_LOCATION_DF_COL] = [f'{_replace_ds_root_w_placeholder(str(self.origin))}[{self.poems_column}:{i}]' 
-                                    for i in range(len(self.df))]
+                                    for i in self.df.index]
         return df
 
     @classmethod
