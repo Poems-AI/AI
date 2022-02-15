@@ -7,13 +7,14 @@ import os
 import pandas as pd
 from pathlib import Path
 import re
-from typing import List, Tuple
+from typing import Callable, List, Tuple, Union
 
 
-__all__ = ['Lang', 'lang_to_str', 'DataSource', 'get_ds_path', 'get_text_files', 'get_data_sources',
-           'SplitterFactory', 'data_splits_to_df', 'PoemsDfReader', 'PoemsFileReader', 
-           'ComposedPoemsReader', 'ReaderFactory', 'PoemsFileConfig', 'PoemsFileWriter', 
-           'merge_poems', 
+__all__ = [
+    'Lang', 'lang_to_str', 'DataSource', 'get_ds_path', 'get_text_files', 'get_file_lines',
+    'get_data_sources', 'SplitterFactory', 'data_splits_to_df', 'PoemsDfReader', 'PoemsFileReader', 
+    'ComposedPoemsReader', 'ReaderFactory', 'PoemsFileConfig', 'PoemsFileWriter', 'merge_poems', 
+    'DfCache', 'LabelsType', 'LabeledPoem', 'LabeledPoemsSplitsDfReader', 'LabeledPoemsFileWriter',
 ]
 
 
@@ -55,6 +56,12 @@ def get_text_files(path:Path):
         elif (child.suffix.lower() == '.txt'):
             result.append(child)
     return result
+
+
+def get_file_lines(path:Path) -> List[str]:
+    with open(path, 'r', encoding='utf-8') as f:
+        text = f.readlines()
+    return text 
 
 
 def _replace_ds_root_w_placeholder(path_str:str):
@@ -293,6 +300,7 @@ class PoemsFileWriter():
                          else '')
             encoded_verse = f'{prev_ends}{self.conf.beginning_of_verse_token}{verse} {verse_end}'
             self.file.write(encoded_verse)
+
         return last_word
 
     def write_poem(self, poem_lines:List[str]):
@@ -307,3 +315,81 @@ class PoemsFileWriter():
 def merge_poems(poems_reader, poems_writer):
     for poem_lines in poems_reader:
         poems_writer.write_poem(poem_lines)
+
+
+class DfCache():
+    def __init__(self):
+        self.dfs_dict = dict()
+        
+    def get(self, path:Union[str,Path]):
+        path = str(path)
+        if path not in self.dfs_dict:
+            self.dfs_dict[path] = pd.read_csv(path)
+        return self.dfs_dict[path]
+        
+    def clear(self):
+        self.dfs_dict.clear()
+
+
+class LabelsType(Enum):
+    Forms = "forms"
+    Topics = "topics"
+
+
+class LabeledPoem:
+    def __init__(self, poem_lines:List[str], label:str):
+        self.poem_lines = poem_lines
+        self.label = label
+        
+    def __repr__(self):
+        return f'[Label]: {self.label}\n[Content]: {self.poem_lines}'
+
+
+class LabeledPoemsSplitsDfReader:
+    def __init__(self, df:pd.DataFrame, label_func:Callable[[str], str]=None):
+        self.df = df
+        self.label_func = label_func if label_func is not None else self._default_label_func
+        self.df_cache = DfCache()
+        
+    def _default_label_func(self, location:str) -> str:
+        if isinstance(location, str): location = Path(location)
+        return location.parent.name
+    
+    def _location_is_just_path(self, location:str):
+        return not location.endswith(']')
+    
+    def _location_to_path(self, location:str) -> Path:
+        location_is_just_path = self._location_is_just_path(location)
+        if location_is_just_path:
+            return Path(location)
+        else:
+            assert '[' in location, f"Missing character '[' or unexpected character ']' in splits DataFrame for location {location}"
+            return Path(location[:location.rindex('[')])
+        
+    def _extract_poem_lines(self, location:str) -> List[str]:
+        path = self._location_to_path(location)
+        if self._location_is_just_path(location):
+            return get_file_lines(path)
+        else:
+            assert path.suffix.lower() == '.csv',(
+                f'Found location with [identifier] {location} in splits DataFrame, but only csv extension is supported for locations with identifiers'
+            )
+            df = self.df_cache.get(path)
+            location_id = location[location.rindex('[')+1:-1]
+            df_col, df_row = location_id.split(':')
+            poem_content = df.iloc[int(df_row)][df_col]
+            return poem_content.split('\n')
+            
+    def __iter__(self):
+        locations = [row[POEM_LOCATION_DF_COL] for _, row in self.df.iterrows()]
+        return (LabeledPoem(self._extract_poem_lines(loc), self.label_func(loc)) 
+                for loc in locations if self._location_to_path(loc).exists())
+
+
+class LabeledPoemsFileWriter():
+    def __init__(self, open_file, conf:PoemsFileConfig):
+        self.poems_file_writer = PoemsFileWriter(open_file, conf)
+        
+    def write_poem(self, labeled_poem:LabeledPoem):
+        self.poems_file_writer.write_verse(labeled_poem.label)
+        self.poems_file_writer.write_poem(labeled_poem.poem_lines)

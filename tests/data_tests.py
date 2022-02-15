@@ -1,6 +1,7 @@
 import io
 import os
-from poemsai.data import merge_poems, PoemsFileConfig, PoemsFileWriter, VerseGrouping
+from poemsai.data import (LabeledPoem, LabeledPoemsFileWriter, merge_poems, PoemsFileConfig, PoemsFileWriter, 
+                          VerseGrouping)
 
 
 def test_merge_poems():
@@ -46,3 +47,26 @@ def test_merge_poems():
     assert full_conf_poem_line_out == (f"<BOS>This is a one verse poem <EOS><EOP>{lb}" + 
                                        f"<BOS>This is a <EOS>a<BOS>two verse poem <EOS><EOP>{lb}" +
                                        f"<BOS>This is a <EOS>a<BOS>five verse <EOS>a verse<BOS>poem, yes <EOS>verse yes<BOS>believe it <EOS>yes it<BOS>or not <EOS><EOP>{lb}")
+
+
+def test_labeled_poems_file_writer():
+    file_conf = PoemsFileConfig(remove_multispaces = True, 
+                                beginning_of_verse_token = '<BOS>',
+                                end_of_verse_token = '<EOS>', 
+                                end_of_poem_token = '<EOP>',
+                                n_prev_verses_terminations = 0,
+                                verse_grouping = VerseGrouping.OnePoemBySequence)
+    poems = [
+        LabeledPoem(['Firstverse', 'Second verse'], 'label1'),
+        LabeledPoem(['First verse', 'Secondverse'], 'label2'),
+    ]
+    with io.StringIO() as out_stream:
+        writer = LabeledPoemsFileWriter(out_stream, file_conf)
+        for poem in poems:
+            writer.write_poem(poem)
+        result = out_stream.getvalue()
+
+    lb = os.linesep   
+    expected_result = ("<BOS>label1 <EOS><BOS>Firstverse <EOS><BOS>Second verse <EOS><EOP>" + lb
+                       + "<BOS>label2 <EOS><BOS>First verse <EOS><BOS>Secondverse <EOS><EOP>" + lb)
+    assert result == expected_result
