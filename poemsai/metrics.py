@@ -46,7 +46,7 @@ def eval_model(model, input_filepath, tokenizer, bs=8):
     with tempfile.TemporaryDirectory() as tmp_dir_name:
         eval_args = TrainingArguments(tmp_dir_name, 
                                       per_device_eval_batch_size=bs, 
-                                      report_to=None,
+                                      report_to=["none"],
                                       eval_accumulation_steps=1)
     trainer = Trainer(
         model=model,
@@ -87,7 +87,7 @@ def eval_model_with_metrics(model, input_filepath, tokenizer, compute_metrics=co
     with tempfile.TemporaryDirectory() as tmp_dir_name:
         eval_args = TrainingArguments(tmp_dir_name, 
                                       per_device_eval_batch_size=bs, 
-                                      report_to=None,
+                                      report_to=["none"],
                                       eval_accumulation_steps=1)
     trainer = PoemsTrainer(
         model=model,
@@ -316,7 +316,7 @@ class ConditionalGenEvaluator:
         tokenized_ds = ds.map(self._preprocess_clf_ds, batched=True)
 
         with tempfile.TemporaryDirectory() as tmp_dir_name:
-            tr_args = TrainingArguments(tmp_dir_name)
+            tr_args = TrainingArguments(tmp_dir_name, report_to=["none"])
             clf_trainer = Trainer(
                 model=self.clf_model, 
                 args=tr_args, 
