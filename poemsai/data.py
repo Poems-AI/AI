@@ -405,9 +405,7 @@ class LabeledPoemsFileWriter():
         self.poems_file_writer.write_poem(labeled_poem.poem_lines)
 
 
-def build_labeled_dfs_from_splits(splits_df_path:pd.DataFrame, labels_type:LabelsType):
-    splits_df = pd.read_csv(splits_df_path, index_col=0)
-    
+def build_labeled_dfs_from_splits(splits_df:pd.DataFrame, labels_type:LabelsType):
     kaggle_ds_root_placeholder = get_ds_root_placeholder(DataSource.Kaggle)
     kaggle_ds_root = get_config_value('KAGGLE_DS_ROOT')
     kaggle_ds_splits_df = splits_df.copy()[
