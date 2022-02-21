@@ -11,18 +11,27 @@ import torch.nn.functional as F
 from typing import Callable
 
 
-__all__ = ['compute_lm_metrics', 'eval_model_with_metrics', 'MetadataLessLoss', 
-           'preprocess_logits_for_metadataless_loss', 'preprocess_logits_for_accuracy', 
-           'compute_metrics_accuracy', 'get_compute_metrics_metadataless']
+__all__ = ['compute_lm_metrics', 'compute_clf_accuracy', 'eval_model_with_metrics', 
+           'MetadataLessLoss', 'preprocess_logits_for_metadataless_loss', 
+           'preprocess_logits_for_accuracy', 'compute_lm_accuracy', 
+           'get_compute_metrics_metadataless']
+
+
+accuracy_metric = load_metric("accuracy")
 
 
 def compute_lm_metrics(eval_preds, expect_preds=False):
-    metric = load_metric("accuracy")
     logits, labels = eval_preds
     labels = labels[:, 1:].reshape(-1)
     logits = logits[:, :-1]
     predictions = (logits if expect_preds else np.argmax(logits, axis=-1)).reshape(-1)
-    return metric.compute(predictions=predictions, references=labels)
+    return accuracy_metric.compute(predictions=predictions, references=labels)
+
+
+def compute_clf_accuracy(eval_preds):
+    logits, labels = eval_preds
+    predictions = np.argmax(logits, axis=-1).reshape(-1)
+    return accuracy_metric.compute(predictions=predictions, references=labels)
 
 
 def eval_model(model, input_filepath, tokenizer, bs=8):
@@ -51,10 +60,7 @@ def preprocess_logits_for_accuracy(logits, labels):
     return logits.argmax(dim=-1)
 
 
-accuracy_metric = load_metric("accuracy")
-
-
-def compute_metrics_accuracy(eval_preds, expect_preds=False):
+def compute_lm_accuracy(eval_preds):
     """Computes the accuracy given the predictions and labels, contained in `eval_preds`.
     
     It assumes the logits have been reduced with argmax(-1) by `preprocess_logits_for_accuracy`.
@@ -67,7 +73,7 @@ def compute_metrics_accuracy(eval_preds, expect_preds=False):
     return accuracy_metric.compute(predictions=preds, references=labels)
 
 
-def eval_model_with_metrics(model, input_filepath, tokenizer, compute_metrics=compute_metrics_accuracy,
+def eval_model_with_metrics(model, input_filepath, tokenizer, compute_metrics=compute_lm_accuracy,
                             preprocess_logits_for_metrics=preprocess_logits_for_accuracy,
                             bs=16):
     "Evaluates `model` straightaway with `compute_metrics` using the data contained in `input_filepath`."
