@@ -1,11 +1,12 @@
-from datasets import load_dataset, load_metric
+from datasets import Dataset, load_dataset, load_metric
 import gc
 from happytransformer import fine_tuning_util
 import numpy as np
+import pandas as pd
 from poemsai.trainer import PoemsTrainer
 from poemsai.torch_utils import get_positions_between
 import tempfile
-from transformers import default_data_collator, Trainer, TrainingArguments
+from transformers import default_data_collator, TextGenerationPipeline, Trainer, TrainingArguments
 import torch
 import torch.nn.functional as F
 from typing import Callable
@@ -14,7 +15,8 @@ from typing import Callable
 __all__ = ['compute_lm_metrics', 'compute_clf_accuracy', 'eval_model_with_metrics', 
            'MetadataLessLoss', 'preprocess_logits_for_metadataless_loss', 
            'preprocess_logits_for_accuracy', 'compute_lm_accuracy', 
-           'get_compute_metrics_metadataless']
+           'get_compute_metrics_metadataless', 'ConditionalGenEvaluator',
+]
 
 
 accuracy_metric = load_metric("accuracy")
@@ -254,3 +256,73 @@ def get_compute_metrics_metadataless(**loss_init_kargs):
         return {'Metadata-less val. loss': loss}
     
     return compute_metadataless_loss
+
+
+class ConditionalGenEvaluator:
+    def __init__(self, gen_model, gen_tokenizer, clf_model, clf_tokenizer, device=-1):
+        self.clf_model = clf_model
+        self.clf_tokenizer = clf_tokenizer
+        self.gen_pipeline = TextGenerationPipeline(model=gen_model, tokenizer=gen_tokenizer, device=device)
+    
+    def _get_labels(self):
+        return list(self.clf_model.config.label2id.keys())
+    
+    def _preprocess_clf_ds(self, ds):
+        tokenized_ds = self.clf_tokenizer(ds["text"], truncation=True)
+        tokenized_ds["labels"] = [self.clf_model.config.label2id[l] for l in ds["labels"]]
+        return tokenized_ds    
+    
+    def eval_with_labels_as_prompt(self):
+        labels = self._get_labels()
+        text = [l + '\n' for l in labels]
+        return self.evaluate(text, labels)
+    
+    def eval_with_seq_fragment_as_prompt(self, labeled_df, seq_len_pct=0.25, max_prompt_len=100):
+        labels = self._get_labels()
+        # Filter out sequences whose labels are not used by the classifier
+        labeled_df = labeled_df[labeled_df.labels.isin(labels)]
+        
+        def _cut_text(text): 
+            end_idx = min(max_prompt_len, int(len(text) * seq_len_pct))
+            # Expand until the end of the last word that fits, at least partially, into the
+            # maximum length
+            if ' ' in text:
+                end_idx = text.index(' ', end_idx)
+            return text[:end_idx]
+        
+        text = labeled_df.apply(lambda row: row.labels + '\n' + _cut_text(row.text), axis=1)
+        return self.evaluate(text.to_list(), labeled_df.labels.to_list())
+    
+    def evaluate(self, prompts, labels):
+        out_text = self.gen_pipeline(
+            prompts, 
+            min_length=10,
+            return_full_text=True,
+            max_length=100,
+            do_sample=True,
+            early_stopping=False,
+            num_beams=1,
+            temperature=1.,
+            top_k=50,
+            no_repeat_ngram_size=0,
+            top_p=0.98,
+        )
+        
+        clf_input_df = pd.DataFrame(columns=['text', 'labels'])
+        # Delete the labels from out_text before evaluation
+        clf_input_df['text'] = ['\n'.join(seq[0]['generated_text'].split('\n')[1:]) for seq in out_text]
+        clf_input_df['labels'] = labels
+        ds = Dataset.from_pandas(clf_input_df)
+        tokenized_ds = ds.map(self._preprocess_clf_ds, batched=True)
+
+        with tempfile.TemporaryDirectory() as tmp_dir_name:
+            tr_args = TrainingArguments(tmp_dir_name)
+            clf_trainer = Trainer(
+                model=self.clf_model, 
+                args=tr_args, 
+                eval_dataset=tokenized_ds, 
+                tokenizer=self.clf_tokenizer,
+                compute_metrics=compute_clf_accuracy,
+            )
+            eval_results = clf_trainer.evaluate()
+        return eval_results

@@ -12,9 +12,10 @@ from typing import Callable, List, Tuple, Union
 
 __all__ = [
     'Lang', 'lang_to_str', 'DataSource', 'get_ds_path', 'get_text_files', 'get_file_lines',
-    'get_data_sources', 'SplitterFactory', 'data_splits_to_df', 'PoemsDfReader', 'PoemsFileReader', 
-    'ComposedPoemsReader', 'ReaderFactory', 'PoemsFileConfig', 'PoemsFileWriter', 'merge_poems', 
-    'DfCache', 'LabelsType', 'LabeledPoem', 'LabeledPoemsSplitsDfReader', 'LabeledPoemsFileWriter',
+    'get_ds_root_placeholder', 'get_data_sources', 'SplitterFactory', 'data_splits_to_df', 
+    'PoemsDfReader', 'PoemsFileReader', 'ComposedPoemsReader', 'ReaderFactory', 'PoemsFileConfig', 
+    'PoemsFileWriter', 'merge_poems', 'DfCache', 'LabelsType', 'LabeledPoem', 'LabeledPoemsSplitsDfReader', 
+    'LabeledPoemsFileWriter', 'build_labeled_dfs_from_splits',
 ]
 
 
@@ -34,6 +35,12 @@ class DataSource(Enum):
 
 POEM_NAME_DF_COL = 'Poem name'
 POEM_LOCATION_DF_COL = 'Location'
+
+
+DS_ROOTS_CONFIG_KEYS = {
+    DataSource.Marcos: 'OWN_DS_ROOT',
+    DataSource.Kaggle: 'KAGGLE_DS_ROOT'
+}
 
 
 def get_ds_path(lang:Lang, source:DataSource):
@@ -64,10 +71,13 @@ def get_file_lines(path:Path) -> List[str]:
     return text 
 
 
+def get_ds_root_placeholder(source:DataSource):
+    return DS_ROOTS_CONFIG_KEYS[source]
+
+
 def _replace_ds_root_w_placeholder(path_str:str):
     path_str = path_str.replace(os.sep, '/')
-    ds_roots_keys = ['KAGGLE_DS_ROOT', 'OWN_DS_ROOT']
-    ds_roots = [(get_config_value(key), key) for key in ds_roots_keys]
+    ds_roots = [(get_config_value(key), key) for key in DS_ROOTS_CONFIG_KEYS.values()]
     for ds_root, ds_root_key in ds_roots:
         ds_root = str(Path(ds_root).resolve()).replace(os.sep, '/')
         try:
@@ -393,3 +403,46 @@ class LabeledPoemsFileWriter():
     def write_poem(self, labeled_poem:LabeledPoem):
         self.poems_file_writer.write_verse(labeled_poem.label)
         self.poems_file_writer.write_poem(labeled_poem.poem_lines)
+
+
+def build_labeled_dfs_from_splits(splits_df_path:pd.DataFrame, labels_type:LabelsType):
+    splits_df = pd.read_csv(splits_df_path, index_col=0)
+    
+    kaggle_ds_root_placeholder = get_ds_root_placeholder(DataSource.Kaggle)
+    kaggle_ds_root = get_config_value('KAGGLE_DS_ROOT')
+    kaggle_ds_splits_df = splits_df.copy()[
+        splits_df.Location.str.contains(f'/{labels_type.value}/', regex=False)
+        & splits_df.Location.str.contains(kaggle_ds_root_placeholder, regex=False)
+    ]
+    kaggle_ds_splits_df.Location = kaggle_ds_splits_df.Location.str.replace(kaggle_ds_root_placeholder, 
+                                                                            kaggle_ds_root,
+                                                                            regex=False)
+    
+    train_split_df = kaggle_ds_splits_df[kaggle_ds_splits_df.Split == 'Train']
+    valid_split_df = kaggle_ds_splits_df[kaggle_ds_splits_df.Split == 'Validation']
+    
+    def _get_content_of_file_path(path:str):
+        if not Path(path).exists():
+            # Some poems contain strange characters in the title that don't match 
+            # the original poem name, but they are about 1% and some are in french 
+            # or other languages, so we don't mind discarding them
+            #print('skipped', path)
+            return ''
+        with open(path) as f:
+            return f.read()
+        
+    def _split_to_labeled_df(split_df):
+        labeled_df = pd.DataFrame({
+            'text': split_df.Location.map(_get_content_of_file_path), 
+            'labels': split_df.Location.map(lambda path: Path(path).parent.name), 
+        })
+        return labeled_df
+    
+    train_df = _split_to_labeled_df(train_split_df)
+    valid_df = _split_to_labeled_df(valid_split_df)
+    train_empty_selector = train_df.text == ''
+    valid_empty_selector = valid_df.text == ''
+    train_df = train_df[~train_empty_selector]
+    valid_df = valid_df[~valid_empty_selector]
+    
+    return train_df, valid_df
