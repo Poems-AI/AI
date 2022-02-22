@@ -43,13 +43,17 @@ DS_ROOTS_CONFIG_KEYS = {
 }
 
 
+def get_ds_root_path(source:DataSource):
+    return get_config_value(DS_ROOTS_CONFIG_KEYS[source])
+
+
 def get_ds_path(lang:Lang, source:DataSource):
     assert source in (DataSource.Marcos, DataSource.Kaggle), 'Not implemented for given DataSource'
     if source == DataSource.Marcos:
         path = Path(f'dataset/marcos_de_la_fuente.txt/{lang_to_str(lang)}.txt')
     elif source == DataSource.Kaggle:
         relative_path = 'poemsdataset' if lang == Lang.English else 'spanish-poetry-dataset/poems.csv'
-        path = Path(get_config_value('KAGGLE_DS_ROOT'))/relative_path
+        path = Path(get_ds_root_path(source))/relative_path
     return path.resolve()
 
 
@@ -72,20 +76,20 @@ def get_file_lines(path:Path) -> List[str]:
 
 
 def get_ds_root_placeholder(source:DataSource):
-    return DS_ROOTS_CONFIG_KEYS[source]
+    return f'[{DS_ROOTS_CONFIG_KEYS[source]}]'
 
 
 def _replace_ds_root_w_placeholder(path_str:str):
     path_str = path_str.replace(os.sep, '/')
-    ds_roots = [(get_config_value(key), key) for key in DS_ROOTS_CONFIG_KEYS.values()]
-    for ds_root, ds_root_key in ds_roots:
+    ds_roots = [(get_ds_root_path(source), get_ds_root_placeholder(source)) for source in DataSource]
+    for ds_root, ds_root_placeholder in ds_roots:
         ds_root = str(Path(ds_root).resolve()).replace(os.sep, '/')
         try:
             ds_root_idx = path_str.index(ds_root)
         except ValueError:
             ds_root_idx = None
         if ds_root_idx == 0:
-            return path_str.replace(ds_root, f'[{ds_root_key}]')
+            return path_str.replace(ds_root, ds_root_placeholder)
     return path_str
 
 
@@ -218,23 +222,25 @@ class PoemsDfReader():
 
     
 class PoemsFileReader():
-    def __init__(self, poems_list:PoemsFileList):
+    def __init__(self, poems_list:PoemsFileList, encoding='utf-8'):
         self.poems_list = poems_list
+        self.encoding = encoding
     
     def __iter__(self):
-        return FilesIterator(list(self.poems_list))
+        return FilesIterator(list(self.poems_list), self.encoding)
     
     
 class FilesIterator():
-    def __init__(self, paths):
+    def __init__(self, paths, encoding='utf-8'):
         self.paths = paths
+        self.encoding = encoding
         self.idx = 0
         
     def __next__(self):
         if self.idx < len(self.paths):
             path = self.paths[self.idx]
             self.idx += 1
-            with open(path, 'r') as f:
+            with open(path, 'r', encoding=self.encoding) as f:
                 text = f.readlines()
             return text    
         raise StopIteration 
@@ -407,7 +413,7 @@ class LabeledPoemsFileWriter():
 
 def build_labeled_dfs_from_splits(splits_df:pd.DataFrame, labels_type:LabelsType):
     kaggle_ds_root_placeholder = get_ds_root_placeholder(DataSource.Kaggle)
-    kaggle_ds_root = get_config_value('KAGGLE_DS_ROOT')
+    kaggle_ds_root = get_ds_root_path(DataSource.Kaggle)
     kaggle_ds_splits_df = splits_df.copy()[
         splits_df.Location.str.contains(f'/{labels_type.value}/', regex=False)
         & splits_df.Location.str.contains(kaggle_ds_root_placeholder, regex=False)
