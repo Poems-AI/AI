@@ -41,16 +41,20 @@ def test_metadataless_loss():
                                      end_poem_id=EOP_ID, ignore_index=IGN_IDX)
     loss_all_tags = MetadataLessLoss(FakeLoss(), begin_verse_id=BOV_ID, end_verse_id=EOV_ID, 
                                      end_poem_id=EOP_ID, ignore_index=IGN_IDX)
+    loss_end_tags_ign_2_verses = MetadataLessLoss(FakeLoss(), begin_verse_id=None, end_verse_id=EOV_ID, 
+                                                  end_poem_id=EOP_ID, ignore_index=IGN_IDX, 
+                                                  n_initial_verses_to_ignore=2)
     labels = torch.Tensor([
         [BOV_ID, 1, 2, EOV_ID, BOV_ID, 3, EOV_ID, EOP_ID, BOV_ID, 4, 5, EOV_ID, BOV_ID, 6, EOV_ID, EOP_ID, BOV_ID, 7, 8, 9, EOV_ID],
         [BOV_ID, 1, 2, EOV_ID, 24, 35, BOV_ID, 3, EOV_ID, 28, EOP_ID, 23, 34, 56, BOV_ID, 4, EOV_ID, 77, 88, BOV_ID, 5],
         [30, 40, BOV_ID, 1, EOV_ID, 33, BOV_ID, 2, 3, EOV_ID, 44, 55, EOP_ID, 45, BOV_ID, 4, EOV_ID, EOP_ID, 88, 56, 62],
-        [1, 2, EOV_ID, 3, EOP_ID, 23, 43, BOV_ID, 4, 5, 6, EOV_ID, BOV_ID, 7, 8, EOV_ID, 12, 15, 14, 18, 19]
+        [1, 2, EOV_ID, 3, EOP_ID, 23, 43, BOV_ID, 4, 5, 6, EOV_ID, BOV_ID, 7, 8, EOV_ID, 12, 15, 14, 18, 19],
     ])
     preds = torch.rand(*labels.shape, 5)
     loss_bov_tag(preds, labels)
     loss_end_tags(preds, labels)
     loss_all_tags(preds, labels)
+    loss_end_tags_ign_2_verses(preds, labels)
     
     expected_loss_bov_target = labels
     expected_loss_end_tags_target = torch.Tensor([
@@ -66,6 +70,14 @@ def test_metadataless_loss():
         [IGN_IDX, 1, 2, EOV_ID, IGN_IDX, IGN_IDX, IGN_IDX, 3, EOV_ID, IGN_IDX, IGN_IDX, IGN_IDX, IGN_IDX, IGN_IDX, IGN_IDX, 4, EOV_ID, IGN_IDX, IGN_IDX, IGN_IDX, 5],
         [IGN_IDX, IGN_IDX, IGN_IDX, 1, EOV_ID, IGN_IDX, IGN_IDX, 2, 3, EOV_ID, IGN_IDX, IGN_IDX, IGN_IDX, IGN_IDX, IGN_IDX, 4, EOV_ID, IGN_IDX, IGN_IDX, IGN_IDX, IGN_IDX],
         [1, 2, EOV_ID, IGN_IDX, IGN_IDX, IGN_IDX, IGN_IDX, IGN_IDX, 4, 5, 6, EOV_ID, IGN_IDX, 7, 8, EOV_ID, IGN_IDX, IGN_IDX, IGN_IDX, IGN_IDX, IGN_IDX]
+    ])
+    expected_loss_end_tags_ign_2_verses_target = torch.Tensor([
+        [BOV_ID, 1, 2, EOV_ID, BOV_ID, 3, EOV_ID, IGN_IDX, IGN_IDX, IGN_IDX, IGN_IDX, IGN_IDX, IGN_IDX, IGN_IDX, IGN_IDX, IGN_IDX, IGN_IDX, IGN_IDX, IGN_IDX, IGN_IDX, IGN_IDX],
+        [BOV_ID, 1, 2, EOV_ID, 24, 35, BOV_ID, 3, EOV_ID, IGN_IDX, IGN_IDX, IGN_IDX, IGN_IDX, IGN_IDX, IGN_IDX, IGN_IDX, IGN_IDX, IGN_IDX, IGN_IDX, IGN_IDX, IGN_IDX],
+        [30, 40, BOV_ID, 1, EOV_ID, 33, BOV_ID, 2, 3, EOV_ID, IGN_IDX, IGN_IDX, IGN_IDX, IGN_IDX, IGN_IDX, IGN_IDX, IGN_IDX, IGN_IDX, IGN_IDX, IGN_IDX, IGN_IDX],
+        # In this case, the end of this sequence is ambiguous, you can't know if the final tokens are between EOV and EOP 
+        # or between two EOV
+        [1, 2, EOV_ID, IGN_IDX, IGN_IDX, IGN_IDX, IGN_IDX, IGN_IDX, IGN_IDX, IGN_IDX, IGN_IDX, IGN_IDX, IGN_IDX, IGN_IDX, IGN_IDX, IGN_IDX, 12, 15, 14, 18, 19],
     ])    
     
     assert loss_bov_tag.inner_loss.call_args[0][0] is preds
@@ -74,3 +86,5 @@ def test_metadataless_loss():
     assert torch.all(loss_end_tags.inner_loss.call_args[0][1] == expected_loss_end_tags_target)
     assert loss_all_tags.inner_loss.call_args[0][0] is preds
     assert torch.all(loss_all_tags.inner_loss.call_args[0][1] == expected_loss_all_tags_target)
+    assert loss_end_tags_ign_2_verses.inner_loss.call_args[0][0] is preds
+    assert torch.all(loss_end_tags_ign_2_verses.inner_loss.call_args[0][1] == expected_loss_end_tags_ign_2_verses_target)

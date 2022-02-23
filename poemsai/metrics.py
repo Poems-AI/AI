@@ -103,13 +103,15 @@ def eval_model_with_metrics(model, input_filepath, tokenizer, compute_metrics=co
 class MetadataLessLoss:
     "Masks the tokens of the target that are considered metadata before passing them to `inner_loss`."
     def __init__(self, inner_loss:Callable, begin_verse_id=None, end_verse_id=None, 
-                 end_poem_id=None, ignore_index=-100, flatten_inner_loss_args=False):
+                 end_poem_id=None, ignore_index=-100, flatten_inner_loss_args=False,
+                 n_initial_verses_to_ignore=0):
         self.inner_loss = inner_loss
         self.begin_verse_id = begin_verse_id
         self.end_verse_id = end_verse_id
         self.end_poem_id = end_poem_id
         self.ignore_index = ignore_index
         self.flatten_inner_loss_args = flatten_inner_loss_args
+        self.n_initial_verses_to_ignore = n_initial_verses_to_ignore
 
     def __call__(self, preds, target):
         target = target.clone()
@@ -155,12 +157,34 @@ class MetadataLessLoss:
             for i in range(bs):
                 ignored_positions_by_batch.append([])
                 ini_pos = 0
+                DONT_KNOW = -1
+                # At the beginning we don't know if we start at the beginning of a poem
+                # because a poem may have been split into two sequences
+                n_verses_completed = DONT_KNOW
                 for j in range(seq_len):
                     if target[i][j] == self.end_poem_id:
-                        ignored_positions_by_batch[i].append((ini_pos, j))
-                        ini_pos = -1
+                        if self.n_initial_verses_to_ignore > 0:
+                            #ini_pos = j
+                            n_verses_completed = 0
+                        else:
+                            ignored_positions_by_batch[i].append((ini_pos, j))                            
+                            ini_pos = -1
+
                     if target[i][j] == self.end_verse_id:
-                        ini_pos = j + 1
+                        if n_verses_completed != DONT_KNOW:
+                            n_verses_completed += 1
+                            if n_verses_completed == self.n_initial_verses_to_ignore:
+                                ignored_positions_by_batch[i].append((ini_pos, j))
+                                ini_pos = j + 1
+                            elif n_verses_completed > self.n_initial_verses_to_ignore:
+                                ini_pos = j + 1
+                        else:
+                            ini_pos = j + 1
+
+                # Ignore the last segment if we ended the loop while being at the beginning of a poem
+                # but before the (self.n_initial_verses_to_ignore)th end of verse
+                if 0 <= n_verses_completed < self.n_initial_verses_to_ignore:
+                    ignored_positions_by_batch[i].append((ini_pos, j))
         
         for i, ignored_positions_batch in enumerate(ignored_positions_by_batch):
             for j,k in ignored_positions_batch:
