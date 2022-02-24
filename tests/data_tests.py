@@ -61,8 +61,9 @@ def test_labeled_poems_file_writer():
                                 n_prev_verses_terminations = 0,
                                 verse_grouping = VerseGrouping.OnePoemBySequence)
     poems = [
-        LabeledPoem(['Firstverse', 'Second verse'], 'label1'),
-        LabeledPoem(['First verse', 'Secondverse'], 'label2'),
+        LabeledPoem(['Firstverse', 'Second verse'], {'cat1': 'label1'}),
+        LabeledPoem(['First verse', 'Secondverse'], {'cat2': 'label2'}),
+        LabeledPoem(['1st verse', '2nd verse'], {'cat1': 'label1', 'cat2': 'label2'}),
     ]
     with io.StringIO() as out_stream:
         writer = LabeledPoemsFileWriter(out_stream, file_conf)
@@ -71,8 +72,11 @@ def test_labeled_poems_file_writer():
         result = out_stream.getvalue()
 
     lb = os.linesep   
-    expected_result = ("<BOS>label1 <EOS><BOS>Firstverse <EOS><BOS>Second verse <EOS><EOP>" + lb
-                       + "<BOS>label2 <EOS><BOS>First verse <EOS><BOS>Secondverse <EOS><EOP>" + lb)
+    expected_result = (
+        "<BOS>label1 <EOS><BOS>Firstverse <EOS><BOS>Second verse <EOS><EOP>" + lb
+        + "<BOS>label2 <EOS><BOS>First verse <EOS><BOS>Secondverse <EOS><EOP>" + lb
+        + "<BOS>label1 <EOS><BOS>label2 <EOS><BOS>1st verse <EOS><BOS>2nd verse <EOS><EOP>" + lb
+    )
     assert result == expected_result
 
 

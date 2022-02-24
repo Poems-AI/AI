@@ -353,23 +353,23 @@ class LabelsType(Enum):
 
 
 class LabeledPoem:
-    def __init__(self, poem_lines:List[str], label:str):
+    def __init__(self, poem_lines:List[str], labels:dict):
         self.poem_lines = poem_lines
-        self.label = label
+        self.labels = labels
         
     def __repr__(self):
-        return f'[Label]: {self.label}\n[Content]: {self.poem_lines}'
+        return f'[Labels]: {self.labels}\n[Content]: {self.poem_lines}'
 
 
 class LabeledPoemsSplitsDfReader:
-    def __init__(self, df:pd.DataFrame, label_func:Callable[[str], str]=None):
+    def __init__(self, df:pd.DataFrame, label_func:Callable[[str], dict]=None):
         self.df = df
         self.label_func = label_func if label_func is not None else self._default_label_func
         self.df_cache = DfCache()
         
-    def _default_label_func(self, location:str) -> str:
+    def _default_label_func(self, location:str) -> dict:
         if isinstance(location, str): location = Path(location)
-        return location.parent.name
+        return {'cat1': location.parent.name}
     
     def _location_is_just_path(self, location:str):
         return not location.endswith(']')
@@ -407,7 +407,8 @@ class LabeledPoemsFileWriter():
         self.poems_file_writer = PoemsFileWriter(open_file, conf)
         
     def write_poem(self, labeled_poem:LabeledPoem):
-        self.poems_file_writer.write_verse(labeled_poem.label)
+        for label in labeled_poem.labels.values():
+            self.poems_file_writer.write_verse(label)
         self.poems_file_writer.write_poem(labeled_poem.poem_lines)
 
 
