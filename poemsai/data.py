@@ -1,3 +1,4 @@
+from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass
 from poemsai.config import get_config_value
 from enum import auto, Enum
@@ -14,9 +15,9 @@ __all__ = [
     'Lang', 'lang_to_str', 'DataSource', 'get_ds_path', 'get_text_files', 'get_file_lines',
     'get_ds_root_placeholder', 'get_data_sources', 'SplitterFactory', 'data_splits_to_df', 
     'PoemsDfReader', 'PoemsFileReader', 'ComposedPoemsReader', 'ReaderFactory', 'PoemsFileConfig', 
-    'PoemsFileWriter', 'merge_poems', 'DfCache', 'LabelsType', 'label_type_to_str', 'LabeledPoem', 
-    'LabeledPoemsSplitsDfReader', 'LabeledPoemsFileWriter', 'LabeledPoemsFileWriterKeyValue', 
-    'LabeledPoemsFileWriterKeyValueMultiverse', 'LabeledPoemsFileWriterExplained',
+    'PoemsIOWriter', 'merge_poems', 'DfCache', 'LabelsType', 'label_type_to_str', 'LabeledPoem', 
+    'LabeledPoemsSplitsDfReader', 'LabeledPoemsIOWriter', 'BaseLabelsWriter', 'LabelsWriterStd', 
+    'LabelsWriterKeyValue', 'LabelsWriterKeyValueMultiverse', 'LabelsWriterExplained', 
     'build_labeled_dfs_from_splits',
 ]
 
@@ -291,7 +292,7 @@ class PoemsFileConfig:
         return cls(**attrs_dict)
 
 
-class PoemsFileWriter():
+class PoemsIOWriter():
     def __init__(self, open_file, conf:PoemsFileConfig):
         self.file = open_file
         self.conf = conf
@@ -409,47 +410,40 @@ class LabeledPoemsSplitsDfReader:
                 for loc in locations if self._location_to_path(loc).exists())
 
 
-class LabeledPoemsFileWriter():
-    def __init__(self, open_file, conf:PoemsFileConfig):
-        self.poems_file_writer = PoemsFileWriter(open_file, conf)
-        
-    def write_poem(self, labeled_poem:LabeledPoem):
-        for label in labeled_poem.labels.values():
+class BaseLabelsWriter(ABC):
+    @abstractmethod
+    def write_labels(self, labels:dict, poems_writer:PoemsIOWriter):
+        pass
+
+
+class LabelsWriterStd(BaseLabelsWriter):
+    def write_labels(self, labels:dict, poems_writer:PoemsIOWriter):
+        for label in labels.values():
             if label == '': label = '?'
-            self.poems_file_writer.write_verse(label)
-        self.poems_file_writer.write_poem(labeled_poem.poem_lines)
+            poems_writer.write_verse(label)
 
 
-class LabeledPoemsFileWriterKeyValue():
-    def __init__(self, open_file, conf:PoemsFileConfig):
-        self.poems_file_writer = PoemsFileWriter(open_file, conf)
-        
-    def write_poem(self, labeled_poem:LabeledPoem):
+class LabelsWriterKeyValue(BaseLabelsWriter):   
+    def write_labels(self, labels:dict, poems_writer:PoemsIOWriter):
         def qm_if_empty(label): return '?' if label == '' else label
-        labels_verse = ', '.join(f'{k}: {qm_if_empty(v)}' for k, v in labeled_poem.labels.items())
-        self.poems_file_writer.write_verse(labels_verse)
-        self.poems_file_writer.write_poem(labeled_poem.poem_lines)
+        labels_verse = ', '.join(f'{k}: {qm_if_empty(v)}' for k, v in labels.items())
+        poems_writer.write_verse(labels_verse)
 
 
-class LabeledPoemsFileWriterKeyValueMultiverse():
-    def __init__(self, open_file, conf:PoemsFileConfig):
-        self.poems_file_writer = PoemsFileWriter(open_file, conf)
-        
-    def write_poem(self, labeled_poem:LabeledPoem):
+class LabelsWriterKeyValueMultiverse(BaseLabelsWriter):
+    def write_labels(self, labels:dict, poems_writer:PoemsIOWriter):
         def qm_if_empty(label): return '?' if label == '' else label
-        for k, v in labeled_poem.labels.items():
-            self.poems_file_writer.write_verse(f'{k}: {qm_if_empty(v)}')        
-        self.poems_file_writer.write_poem(labeled_poem.poem_lines)
+        for k, v in labels.items():
+            poems_writer.write_verse(f'{k}: {qm_if_empty(v)}')
 
 
-class LabeledPoemsFileWriterExplained():
-    def __init__(self, open_file, conf:PoemsFileConfig, omit_empty=False):
-        self.poems_file_writer = PoemsFileWriter(open_file, conf)
+class LabelsWriterExplained(BaseLabelsWriter):
+    def __init__(self, omit_empty=False):
         self.omit_empty = omit_empty
         
-    def write_poem(self, labeled_poem:LabeledPoem):
+    def write_labels(self, labels:dict, poems_writer:PoemsIOWriter):
         labels_verse = 'This is a poem'
-        for cat, label in labeled_poem.labels.items():
+        for cat, label in labels.items():
             if label == '': 
                 if self.omit_empty: 
                     continue
@@ -460,7 +454,16 @@ class LabeledPoemsFileWriterExplained():
             elif cat == label_type_to_str(LabelsType.Forms):
                 labels_verse += f' with {label} form'
         labels_verse += ':'
-        self.poems_file_writer.write_verse(labels_verse)
+        poems_writer.write_verse(labels_verse)
+
+
+class LabeledPoemsIOWriter():
+    def __init__(self, open_file, conf:PoemsFileConfig, labels_writer:BaseLabelsWriter=None):
+        self.poems_file_writer = PoemsIOWriter(open_file, conf)
+        self.labels_writer = labels_writer if labels_writer is not None else LabelsWriterStd()
+        
+    def write_poem(self, labeled_poem:LabeledPoem):
+        self.labels_writer.write_labels(labeled_poem.labels, self.poems_file_writer)
         self.poems_file_writer.write_poem(labeled_poem.poem_lines)
 
 

@@ -5,9 +5,9 @@ import pandas as pd
 from pathlib import Path
 from poemsai.config import set_config_value
 from poemsai.data import (build_labeled_dfs_from_splits, label_type_to_str, LabeledPoem, 
-                          LabeledPoemsFileWriter, LabeledPoemsFileWriterExplained, 
-                          LabeledPoemsFileWriterKeyValue, LabeledPoemsFileWriterKeyValueMultiverse,
-                          LabelsType, merge_poems, PoemsFileConfig, PoemsFileWriter, VerseGrouping)
+                          LabeledPoemsIOWriter, LabelsWriterExplained,  LabelsWriterKeyValue, 
+                          LabelsWriterKeyValueMultiverse, LabelsWriterStd, LabelsType, merge_poems, 
+                          PoemsFileConfig, PoemsIOWriter, VerseGrouping)
 import tempfile
 
 
@@ -39,7 +39,7 @@ def test_merge_poems():
     outputs = []
     for conf in (simple_conf, full_conf, full_conf_poem_line):
         with io.StringIO() as f:
-            writer = PoemsFileWriter(f, conf)
+            writer = PoemsIOWriter(f, conf)
             merge_poems(fake_poems_reader, writer)
             outputs.append(f.getvalue())
 
@@ -56,9 +56,9 @@ def test_merge_poems():
                                        f"<BOS>This is a <EOS>a<BOS>five verse <EOS>a verse<BOS>poem, yes <EOS>verse yes<BOS>believe it <EOS>yes it<BOS>or not <EOS><EOP>{lb}")
 
 
-def _write_poems_to_str(poems, writer_cls, file_conf) -> str:
+def _write_poems_to_str(poems, labels_writer, file_conf) -> str:
     with io.StringIO() as out_stream:
-        writer = writer_cls(out_stream, file_conf)
+        writer = LabeledPoemsIOWriter(out_stream, file_conf, labels_writer=labels_writer)
         for poem in poems:
             writer.write_poem(poem)
         return out_stream.getvalue()
@@ -81,13 +81,13 @@ def test_labeled_poems_file_writer():
         LabeledPoem(['1st verse', '2nd verse'], {forms_cat: 'label1', topics_cat: ''}),
     ]
 
-    result_std = _write_poems_to_str(poems, LabeledPoemsFileWriter, file_conf)
-    result_key_value = _write_poems_to_str(poems, LabeledPoemsFileWriterKeyValue, file_conf)
-    result_key_value_multiverse = _write_poems_to_str(poems, LabeledPoemsFileWriterKeyValueMultiverse, file_conf)
-    result_explained = _write_poems_to_str(poems, LabeledPoemsFileWriterExplained, file_conf)
+    result_std = _write_poems_to_str(poems, LabelsWriterStd(), file_conf)
+    result_key_value = _write_poems_to_str(poems, LabelsWriterKeyValue(), file_conf)
+    result_key_value_multiverse = _write_poems_to_str(poems, LabelsWriterKeyValueMultiverse(), file_conf)
+    result_explained = _write_poems_to_str(poems, LabelsWriterExplained(), file_conf)
     result_explained_omit_empty = _write_poems_to_str(
         poems, 
-        partial(LabeledPoemsFileWriterExplained, omit_empty=True), 
+        LabelsWriterExplained(omit_empty=True), 
         file_conf
     )
 
