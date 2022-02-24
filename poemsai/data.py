@@ -14,8 +14,8 @@ __all__ = [
     'Lang', 'lang_to_str', 'DataSource', 'get_ds_path', 'get_text_files', 'get_file_lines',
     'get_ds_root_placeholder', 'get_data_sources', 'SplitterFactory', 'data_splits_to_df', 
     'PoemsDfReader', 'PoemsFileReader', 'ComposedPoemsReader', 'ReaderFactory', 'PoemsFileConfig', 
-    'PoemsFileWriter', 'merge_poems', 'DfCache', 'LabelsType', 'LabeledPoem', 'LabeledPoemsSplitsDfReader', 
-    'LabeledPoemsFileWriter', 'build_labeled_dfs_from_splits',
+    'PoemsFileWriter', 'merge_poems', 'DfCache', 'LabelsType', 'label_type_to_str', 'LabeledPoem', 
+    'LabeledPoemsSplitsDfReader', 'LabeledPoemsFileWriter', 'build_labeled_dfs_from_splits',
 ]
 
 
@@ -293,7 +293,7 @@ class PoemsFileWriter():
     def __init__(self, open_file, conf:PoemsFileConfig):
         self.file = open_file
         self.conf = conf
-        self.meaningful_chars_pattern = re.compile("[a-zA-Z0-9]")
+        self.meaningful_chars_pattern = re.compile("[a-zA-Z0-9\?]")
         self.multispace_pattern = re.compile(" {2,}") if conf.remove_multispaces else None
         self.eol_punctuation_pattern = re.compile('[ .,;\?\!\-\\\:]+$')
         
@@ -350,6 +350,11 @@ class DfCache():
 class LabelsType(Enum):
     Forms = "forms"
     Topics = "topics"
+    All = "form_and_topic"
+
+
+def label_type_to_str(label_type:LabelsType):
+    return label_type.value[:-1] if label_type != LabelsType.All else label_type.value
 
 
 class LabeledPoem:
