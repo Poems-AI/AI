@@ -1,10 +1,13 @@
+from functools import partial
 import io
 import os
 import pandas as pd
 from pathlib import Path
 from poemsai.config import set_config_value
-from poemsai.data import (build_labeled_dfs_from_splits, LabeledPoem, LabeledPoemsFileWriter, LabelsType,
-                          merge_poems, PoemsFileConfig, PoemsFileWriter, VerseGrouping)
+from poemsai.data import (build_labeled_dfs_from_splits, label_type_to_str, LabeledPoem, 
+                          LabeledPoemsFileWriter, LabeledPoemsFileWriterExplained, 
+                          LabeledPoemsFileWriterKeyValue, LabeledPoemsFileWriterKeyValueMultiverse,
+                          LabelsType, merge_poems, PoemsFileConfig, PoemsFileWriter, VerseGrouping)
 import tempfile
 
 
@@ -53,6 +56,14 @@ def test_merge_poems():
                                        f"<BOS>This is a <EOS>a<BOS>five verse <EOS>a verse<BOS>poem, yes <EOS>verse yes<BOS>believe it <EOS>yes it<BOS>or not <EOS><EOP>{lb}")
 
 
+def _write_poems_to_str(poems, writer_cls, file_conf) -> str:
+    with io.StringIO() as out_stream:
+        writer = writer_cls(out_stream, file_conf)
+        for poem in poems:
+            writer.write_poem(poem)
+        return out_stream.getvalue()
+
+
 def test_labeled_poems_file_writer():
     file_conf = PoemsFileConfig(remove_multispaces = True, 
                                 beginning_of_verse_token = '<BOS>',
@@ -60,24 +71,68 @@ def test_labeled_poems_file_writer():
                                 end_of_poem_token = '<EOP>',
                                 n_prev_verses_terminations = 0,
                                 verse_grouping = VerseGrouping.OnePoemBySequence)
+    forms_cat = label_type_to_str(LabelsType.Forms)
+    topics_cat = label_type_to_str(LabelsType.Topics)
     poems = [
-        LabeledPoem(['Firstverse', 'Second verse'], {'cat1': 'label1'}),
-        LabeledPoem(['First verse', 'Secondverse'], {'cat2': 'label2'}),
-        LabeledPoem(['1st verse', '2nd verse'], {'cat1': 'label1', 'cat2': 'label2'}),
+        LabeledPoem(['Firstverse', 'Second verse'], {forms_cat: 'label1'}),
+        LabeledPoem(['First verse', 'Secondverse'], {topics_cat: 'label2'}),
+        LabeledPoem(['1st verse', '2nd verse'], {forms_cat: 'label1', topics_cat: 'label2'}),
+        LabeledPoem(['1st verse', '2nd verse'], {forms_cat: '', topics_cat: 'label2'}),
+        LabeledPoem(['1st verse', '2nd verse'], {forms_cat: 'label1', topics_cat: ''}),
     ]
-    with io.StringIO() as out_stream:
-        writer = LabeledPoemsFileWriter(out_stream, file_conf)
-        for poem in poems:
-            writer.write_poem(poem)
-        result = out_stream.getvalue()
+
+    result_std = _write_poems_to_str(poems, LabeledPoemsFileWriter, file_conf)
+    result_key_value = _write_poems_to_str(poems, LabeledPoemsFileWriterKeyValue, file_conf)
+    result_key_value_multiverse = _write_poems_to_str(poems, LabeledPoemsFileWriterKeyValueMultiverse, file_conf)
+    result_explained = _write_poems_to_str(poems, LabeledPoemsFileWriterExplained, file_conf)
+    result_explained_omit_empty = _write_poems_to_str(
+        poems, 
+        partial(LabeledPoemsFileWriterExplained, omit_empty=True), 
+        file_conf
+    )
 
     lb = os.linesep   
-    expected_result = (
+    expected_result_std = (
         "<BOS>label1 <EOS><BOS>Firstverse <EOS><BOS>Second verse <EOS><EOP>" + lb
         + "<BOS>label2 <EOS><BOS>First verse <EOS><BOS>Secondverse <EOS><EOP>" + lb
         + "<BOS>label1 <EOS><BOS>label2 <EOS><BOS>1st verse <EOS><BOS>2nd verse <EOS><EOP>" + lb
+        + "<BOS>? <EOS><BOS>label2 <EOS><BOS>1st verse <EOS><BOS>2nd verse <EOS><EOP>" + lb
+        + "<BOS>label1 <EOS><BOS>? <EOS><BOS>1st verse <EOS><BOS>2nd verse <EOS><EOP>" + lb
     )
-    assert result == expected_result
+    expected_result_key_value = (
+        f"<BOS>{forms_cat}: label1 <EOS><BOS>Firstverse <EOS><BOS>Second verse <EOS><EOP>" + lb
+        + f"<BOS>{topics_cat}: label2 <EOS><BOS>First verse <EOS><BOS>Secondverse <EOS><EOP>" + lb
+        + f"<BOS>{forms_cat}: label1, {topics_cat}: label2 <EOS><BOS>1st verse <EOS><BOS>2nd verse <EOS><EOP>" + lb
+        + f"<BOS>{forms_cat}: ?, {topics_cat}: label2 <EOS><BOS>1st verse <EOS><BOS>2nd verse <EOS><EOP>" + lb
+        + f"<BOS>{forms_cat}: label1, {topics_cat}: ? <EOS><BOS>1st verse <EOS><BOS>2nd verse <EOS><EOP>" + lb
+    )
+    expected_result_key_value_multiverse = (
+        f"<BOS>{forms_cat}: label1 <EOS><BOS>Firstverse <EOS><BOS>Second verse <EOS><EOP>" + lb
+        + f"<BOS>{topics_cat}: label2 <EOS><BOS>First verse <EOS><BOS>Secondverse <EOS><EOP>" + lb
+        + f"<BOS>{forms_cat}: label1 <EOS><BOS>{topics_cat}: label2 <EOS><BOS>1st verse <EOS><BOS>2nd verse <EOS><EOP>" + lb
+        + f"<BOS>{forms_cat}: ? <EOS><BOS>{topics_cat}: label2 <EOS><BOS>1st verse <EOS><BOS>2nd verse <EOS><EOP>" + lb
+        + f"<BOS>{forms_cat}: label1 <EOS><BOS>{topics_cat}: ? <EOS><BOS>1st verse <EOS><BOS>2nd verse <EOS><EOP>" + lb
+    )
+    expected_result_explained = (
+        "<BOS>This is a poem with label1 form: <EOS><BOS>Firstverse <EOS><BOS>Second verse <EOS><EOP>" + lb
+        + "<BOS>This is a poem about label2: <EOS><BOS>First verse <EOS><BOS>Secondverse <EOS><EOP>" + lb
+        + "<BOS>This is a poem with label1 form about label2: <EOS><BOS>1st verse <EOS><BOS>2nd verse <EOS><EOP>" + lb
+        + "<BOS>This is a poem with ? form about label2: <EOS><BOS>1st verse <EOS><BOS>2nd verse <EOS><EOP>" + lb
+        + "<BOS>This is a poem with label1 form about ?: <EOS><BOS>1st verse <EOS><BOS>2nd verse <EOS><EOP>" + lb
+    )
+    expected_result_explained_omit_empty = (
+        "<BOS>This is a poem with label1 form: <EOS><BOS>Firstverse <EOS><BOS>Second verse <EOS><EOP>" + lb
+        + "<BOS>This is a poem about label2: <EOS><BOS>First verse <EOS><BOS>Secondverse <EOS><EOP>" + lb
+        + "<BOS>This is a poem with label1 form about label2: <EOS><BOS>1st verse <EOS><BOS>2nd verse <EOS><EOP>" + lb
+        + "<BOS>This is a poem about label2: <EOS><BOS>1st verse <EOS><BOS>2nd verse <EOS><EOP>" + lb
+        + "<BOS>This is a poem with label1 form: <EOS><BOS>1st verse <EOS><BOS>2nd verse <EOS><EOP>" + lb
+    )
+
+    assert result_std == expected_result_std
+    assert result_key_value == expected_result_key_value
+    assert result_key_value_multiverse == expected_result_key_value_multiverse
+    assert result_explained == expected_result_explained
+    assert result_explained_omit_empty == expected_result_explained_omit_empty
 
 
 def test_build_labeled_dfs_from_splits():
