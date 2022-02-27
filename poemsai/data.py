@@ -415,12 +415,18 @@ class BaseLabelsWriter(ABC):
     def write_labels(self, labels:dict, poems_writer:PoemsIOWriter):
         pass
 
+    def num_verses_needed(self, n_total_categories:int) -> int:
+        pass
+
 
 class LabelsWriterStd(BaseLabelsWriter):
     def write_labels(self, labels:dict, poems_writer:PoemsIOWriter):
         for label in labels.values():
             if label == '': label = '?'
             poems_writer.write_verse(label)
+
+    def num_verses_needed(self, n_total_categories:int) -> int:
+        return n_total_categories
 
 
 class LabelsWriterKeyValue(BaseLabelsWriter):   
@@ -429,12 +435,18 @@ class LabelsWriterKeyValue(BaseLabelsWriter):
         labels_verse = ', '.join(f'{k}: {qm_if_empty(v)}' for k, v in labels.items())
         poems_writer.write_verse(labels_verse)
 
+    def num_verses_needed(self, n_total_categories:int) -> int:
+        return 1
+
 
 class LabelsWriterKeyValueMultiverse(BaseLabelsWriter):
     def write_labels(self, labels:dict, poems_writer:PoemsIOWriter):
         def qm_if_empty(label): return '?' if label == '' else label
         for k, v in labels.items():
             poems_writer.write_verse(f'{k}: {qm_if_empty(v)}')
+
+    def num_verses_needed(self, n_total_categories:int) -> int:
+        return n_total_categories
 
 
 class LabelsWriterExplained(BaseLabelsWriter):
@@ -455,6 +467,9 @@ class LabelsWriterExplained(BaseLabelsWriter):
                 labels_verse += f' with {label} form'
         labels_verse += ':'
         poems_writer.write_verse(labels_verse)
+
+    def num_verses_needed(self, n_total_categories:int) -> int:
+        return 1
 
 
 class LabeledPoemsIOWriter():
