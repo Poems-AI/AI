@@ -334,7 +334,7 @@ class ConditionalGenEvaluator:
         labels = self._get_labels()
         text = [self._label_to_formatted_str(l) for l in labels]
         if len(labels) < min_samples:
-            int_ratio = round(min_samples / labels)
+            int_ratio = round(min_samples / len(labels))
             labels = labels * int_ratio
             text = text * int_ratio
         return self._evaluate(text, labels)
