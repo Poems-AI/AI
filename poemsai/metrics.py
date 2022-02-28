@@ -330,9 +330,13 @@ class ConditionalGenEvaluator:
         tokenized_ds["labels"] = [self.clf_model.config.label2id[l] for l in ds["labels"]]
         return tokenized_ds    
     
-    def eval_with_labels_as_prompt(self):
+    def eval_with_labels_as_prompt(self, min_samples=1000):
         labels = self._get_labels()
         text = [self._label_to_formatted_str(l) for l in labels]
+        if len(labels) < min_samples:
+            int_ratio = round(min_samples / labels)
+            labels = labels * int_ratio
+            text = text * int_ratio
         return self._evaluate(text, labels)
     
     def eval_with_seq_fragment_as_prompt(self, labeled_df, seq_len_pct=0.25, max_prompt_len=100):
