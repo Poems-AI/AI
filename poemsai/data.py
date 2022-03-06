@@ -1,14 +1,16 @@
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass
-from poemsai.config import get_config_value
 from enum import auto, Enum
 import json
 import numpy as np
 import os
 import pandas as pd
 from pathlib import Path
+from poemsai.config import get_config_value
+from poemsai.hf_utils import get_model_id
 import re
-from typing import Callable, List, Tuple, Union
+from transformers import AutoModelForSequenceClassification, AutoTokenizer, TextClassificationPipeline
+from typing import Callable, List, Optional, Tuple, Union
 
 
 __all__ = [
@@ -16,9 +18,9 @@ __all__ = [
     'get_ds_root_placeholder', 'get_data_sources', 'SplitterFactory', 'data_splits_to_df', 
     'PoemsDfReader', 'PoemsFileReader', 'ComposedPoemsReader', 'ReaderFactory', 'PoemsFileConfig', 
     'PoemsIOWriter', 'merge_poems', 'DfCache', 'LabelsType', 'label_type_to_str', 'LabeledPoem', 
-    'LabeledPoemsSplitsDfReader', 'LabeledPoemsIOWriter', 'BaseLabelsWriter', 'LabelsWriterStd', 
-    'LabelsWriterKeyValue', 'LabelsWriterKeyValueMultiverse', 'LabelsWriterExplained', 
-    'build_labeled_dfs_from_splits',
+    'LabeledPoemsSplitsDfContentReader', 'LabeledPoemsSplitsDfReader', 'LabeledPoemsIOWriter', 
+    'BaseLabelsWriter', 'LabelsWriterStd', 'LabelsWriterKeyValue', 'LabelsWriterKeyValueMultiverse', 
+    'LabelsWriterExplained', 'build_labeled_dfs_from_splits', 'LabelsEstimator',
 ]
 
 
@@ -302,13 +304,13 @@ class PoemsIOWriter():
         
     def write_verse(self, verse, endofpoem=False, prev_verses_last_word:List[str]=None):
         last_word = ''
-        if self.meaningful_chars_pattern.search(verse) is None:
+        if (not endofpoem) and (self.meaningful_chars_pattern.search(verse) is None):
             return last_word
         if self.multispace_pattern is not None:
             verse = self.multispace_pattern.sub(" ", verse)
         verse = verse.strip()
 
-        if len(verse) > 0:
+        if (len(verse) > 0) or endofpoem:
             last_word = self.eol_punctuation_pattern.sub('', verse).split(' ')[-1]
             verse_end = self.conf.end_of_verse_token
             if endofpoem: verse_end += self.conf.end_of_poem_token
@@ -369,16 +371,10 @@ class LabeledPoem:
         return f'[Labels]: {self.labels}\n[Content]: {self.poem_lines}'
 
 
-class LabeledPoemsSplitsDfReader:
-    def __init__(self, df:pd.DataFrame, label_func:Callable[[str], dict]=None):
-        self.df = df
-        self.label_func = label_func if label_func is not None else self._default_label_func
+class PoemsSplitsDfContentReader:
+    def __init__(self):
         self.df_cache = DfCache()
-        
-    def _default_label_func(self, location:str) -> dict:
-        if isinstance(location, str): location = Path(location)
-        return {'cat1': location.parent.name}
-    
+
     def _location_is_just_path(self, location:str):
         return not location.endswith(']')
     
@@ -403,11 +399,22 @@ class LabeledPoemsSplitsDfReader:
             df_col, df_row = location_id.split(':')
             poem_content = df.iloc[int(df_row)][df_col]
             return poem_content.split('\n')
+
+
+class LabeledPoemsSplitsDfReader:
+    def __init__(self, df:pd.DataFrame, label_func:Callable[[str], dict]=None):
+        self.df = df
+        self.label_func = label_func if label_func is not None else self._default_label_func
+        self.content_reader = PoemsSplitsDfContentReader()
+        
+    def _default_label_func(self, location:str) -> dict:
+        if isinstance(location, str): location = Path(location)
+        return {'cat1': location.parent.name}
             
     def __iter__(self):
         locations = [row[POEM_LOCATION_DF_COL] for _, row in self.df.iterrows()]
-        return (LabeledPoem(self._extract_poem_lines(loc), self.label_func(loc)) 
-                for loc in locations if self._location_to_path(loc).exists())
+        return (LabeledPoem(self.content_reader._extract_poem_lines(loc), self.label_func(loc)) 
+                for loc in locations if self.content_reader._location_to_path(loc).exists())
 
 
 class BaseLabelsWriter(ABC):
@@ -521,3 +528,38 @@ def build_labeled_dfs_from_splits(splits_df:pd.DataFrame, labels_type:LabelsType
     valid_df = valid_df[~valid_empty_selector]
     
     return train_df, valid_df
+
+
+class LabelsEstimator:
+    """Class that packs a trained classifier for each `LabelsType` category.
+
+    It assumes there's a classifier in the HuggingFace Hub of the user `hf_user`
+    for each category and with a name that follows the same pattern as the models
+    trained with the notebook 'train_poems_classifier.ipynb'.
+
+    Args:
+        base_model_name: name of the architecture of the model, as defined by Hugging
+            Face. For instance: gpt2, distilbert, big_bird, ...
+        hf_user: Hugging Face username of the owner of the models
+        hf_token (optional): Hugging Face access token of the owner of the models, with
+            read permission. Only needed if any of the models is private.
+        device: Device ordinal for CPU/GPU supports. Setting this to -1 will leverage CPU, 
+            a positive will run the model on the associated CUDA device id.
+    """
+    def __init__(self, base_model_name:str, hf_user, hf_token:Optional[str]=None, device=-1):
+        self.clf_pipelines = dict()
+        for cat in LabelsType:
+            if cat == LabelsType.All: continue
+            checkpoint_name = f'{base_model_name}-poems-clf-by-{label_type_to_str(cat)}.en'
+            model_id = get_model_id(checkpoint_name, hf_user)
+            clf = AutoModelForSequenceClassification.from_pretrained(model_id, use_auth_token=hf_token)
+            tokenizer = AutoTokenizer.from_pretrained(model_id, use_auth_token=hf_token)
+            self.clf_pipelines[cat] = TextClassificationPipeline(
+                model=clf, 
+                tokenizer=tokenizer, 
+                device=device,     
+            )
+
+    def predict(self, cat:LabelsType, poem_lines:List[str]) -> str:
+        poem_content = '\n'.join(poem_lines)
+        return self.clf_pipelines[cat](poem_content, truncation=True)[0]['label']
