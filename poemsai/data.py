@@ -10,7 +10,7 @@ from poemsai.config import get_config_value
 from poemsai.hf_utils import get_model_id
 import re
 from transformers import AutoModelForSequenceClassification, AutoTokenizer, TextClassificationPipeline
-from typing import Callable, List, Optional, Tuple, Union
+from typing import Callable, Dict, List, Optional, Tuple, Union
 
 
 __all__ = [
@@ -20,7 +20,8 @@ __all__ = [
     'PoemsIOWriter', 'merge_poems', 'DfCache', 'LabelsType', 'label_type_to_str', 'LabeledPoem', 
     'LabeledPoemsSplitsDfContentReader', 'LabeledPoemsSplitsDfReader', 'LabeledPoemsIOWriter', 
     'BaseLabelsWriter', 'LabelsWriterStd', 'LabelsWriterKeyValue', 'LabelsWriterKeyValueMultiverse', 
-    'LabelsWriterExplained', 'build_labeled_dfs_from_splits', 'LabelsEstimator',
+    'LabelsWriterExplained', 'LabelsDecoderKeyValue', 'LabelsDecoderExplained', 'build_labeled_dfs_from_splits', 
+    'LabelsEstimator',
 ]
 
 
@@ -386,7 +387,7 @@ class PoemsSplitsDfContentReader:
             assert '[' in location, f"Missing character '[' or unexpected character ']' in splits DataFrame for location {location}"
             return Path(location[:location.rindex('[')])
         
-    def _extract_poem_lines(self, location:str) -> List[str]:
+    def extract_poem_lines(self, location:str) -> List[str]:
         path = self._location_to_path(location)
         if self._location_is_just_path(location):
             return get_file_lines(path)
@@ -413,7 +414,7 @@ class LabeledPoemsSplitsDfReader:
             
     def __iter__(self):
         locations = [row[POEM_LOCATION_DF_COL] for _, row in self.df.iterrows()]
-        return (LabeledPoem(self.content_reader._extract_poem_lines(loc), self.label_func(loc)) 
+        return (LabeledPoem(self.content_reader.extract_poem_lines(loc), self.label_func(loc)) 
                 for loc in locations if self.content_reader._location_to_path(loc).exists())
 
 
@@ -422,6 +423,7 @@ class BaseLabelsWriter(ABC):
     def write_labels(self, labels:dict, poems_writer:PoemsIOWriter):
         pass
 
+    @abstractmethod
     def num_verses_needed(self, n_total_categories:int) -> int:
         pass
 
@@ -477,6 +479,101 @@ class LabelsWriterExplained(BaseLabelsWriter):
 
     def num_verses_needed(self, n_total_categories:int) -> int:
         return 1
+
+
+class BaseLabelsDecoder(ABC):
+    """Child classes must define a method of extracting the labels from a poem(s) text."""
+    @abstractmethod
+    def decode_labels(self, text:str, file_config:PoemsFileConfig) -> Dict[LabelsType, str]:
+        pass
+
+
+class LabelsDecoderKeyValue(BaseLabelsDecoder):
+    """Extracts the labels from a poem(s) text with the format used by `LabelsWriterKeyValue`.
+    
+    It assumes that `file_config.end_of_verse_token` and `file_config.end_of_poem_token` are
+    defined (not empty).
+    """
+    def decode_labels(self, text:str, file_config:PoemsFileConfig) -> Dict[LabelsType, str]:
+        labels = []
+        text = text.replace(file_config.beginning_of_verse_token, '')
+        first_verse_by_poem = [
+            poem_text.split(file_config.end_of_verse_token)[0]
+            for poem_text in text.split(file_config.end_of_poem_token)
+            if len(poem_text) > 0
+        ]
+
+        topic_key = label_type_to_str(LabelsType.Topics)#+":"
+        form_key = label_type_to_str(LabelsType.Forms)#+":"
+        unknown_str = "?"
+
+        for labels_verse in first_verse_by_poem:
+            key_value_list = labels_verse.split(', ')
+            poem_labels = dict()
+            labels.append(poem_labels)
+            
+            for key_value_str in key_value_list:
+                if key_value_str.startswith(topic_key):
+                    value_str = key_value_str[len(topic_key)+1:].strip()
+                    poem_labels[topic_key] = value_str if value_str != unknown_str else ''
+                elif key_value_str.startswith(form_key):
+                    value_str = key_value_str[len(form_key)+1:].strip()
+                    poem_labels[form_key] = value_str if value_str != unknown_str else ''
+            
+            if topic_key not in poem_labels: poem_labels[topic_key] = ''
+            if form_key not in poem_labels: poem_labels[form_key] = ''
+
+        return labels
+
+
+class LabelsDecoderExplained(BaseLabelsDecoder):
+    """Extracts the labels from a poem(s) text with the format used by `LabelsWriterExplained`.
+    
+    It assumes that `file_config.end_of_verse_token` and `file_config.end_of_poem_token` are
+    defined (not empty).
+    """
+    def decode_labels(self, text:str, file_config:PoemsFileConfig) -> Dict[LabelsType, str]:
+        labels = []
+        text = text.replace(file_config.beginning_of_verse_token, '')
+        first_verse_by_poem = [
+            poem_text.split(file_config.end_of_verse_token)[0]
+            for poem_text in text.split(file_config.end_of_poem_token)
+            if len(poem_text) > 0
+        ]
+        topic_key = label_type_to_str(LabelsType.Topics)
+        form_key = label_type_to_str(LabelsType.Forms)
+
+        for labels_verse in first_verse_by_poem:
+            labels_verse = labels_verse.strip()
+            if labels_verse[-1] == ":": 
+                labels_verse = labels_verse[:-1]
+            verse_tokens = labels_verse.split(' ')
+            poem_labels = dict()
+            labels.append(poem_labels)
+            
+            try:
+                about_idx = verse_tokens.index('about')
+            except ValueError:
+                about_idx = -1
+            poem_labels[topic_key] = (
+                self._empty_label_if_unknown(verse_tokens[about_idx + 1].strip())
+                if -1 < about_idx < (len(verse_tokens) - 1)
+                else ''
+            )
+            try:
+                with_idx = verse_tokens.index('with')
+            except ValueError:
+                with_idx = -1
+            poem_labels[form_key] = (
+                self._empty_label_if_unknown(verse_tokens[with_idx + 1].strip())
+                if -1 < with_idx < (len(verse_tokens) - 1)
+                else ''
+            )
+            
+        return labels
+    
+    def _empty_label_if_unknown(self, label):
+        return '' if label == '?' else label
 
 
 class LabeledPoemsIOWriter():

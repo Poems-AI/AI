@@ -5,9 +5,10 @@ import pandas as pd
 from pathlib import Path
 from poemsai.config import set_config_value
 from poemsai.data import (build_labeled_dfs_from_splits, label_type_to_str, LabeledPoem, 
-                          LabeledPoemsIOWriter, LabelsWriterExplained,  LabelsWriterKeyValue, 
-                          LabelsWriterKeyValueMultiverse, LabelsWriterStd, LabelsType, merge_poems, 
-                          PoemsFileConfig, PoemsIOWriter, VerseGrouping)
+                          LabeledPoemsIOWriter, LabelsDecoderExplained, LabelsDecoderKeyValue,
+                          LabelsWriterExplained,  LabelsWriterKeyValue, LabelsWriterKeyValueMultiverse, 
+                          LabelsWriterStd, LabelsType, merge_poems, PoemsFileConfig, PoemsIOWriter, 
+                          VerseGrouping)
 import tempfile
 
 
@@ -133,6 +134,62 @@ def test_labeled_poems_file_writer():
     assert result_key_value_multiverse == expected_result_key_value_multiverse
     assert result_explained == expected_result_explained
     assert result_explained_omit_empty == expected_result_explained_omit_empty
+
+
+def test_labels_decoders():
+    file_conf = PoemsFileConfig(remove_multispaces = True, 
+                                beginning_of_verse_token = '<BOS>',
+                                end_of_verse_token = '<EOS>', 
+                                end_of_poem_token = '<EOP>',
+                                n_prev_verses_terminations = 0,
+                                verse_grouping = VerseGrouping.OnePoemBySequence)
+    forms_cat = label_type_to_str(LabelsType.Forms)
+    topics_cat = label_type_to_str(LabelsType.Topics)
+    decoder_kv = LabelsDecoderKeyValue()
+    decoder_exp = LabelsDecoderExplained()
+
+    text_kv = (
+        f"<BOS>{forms_cat}: sonnet, {topics_cat}: sky<EOS><EOP>"
+        + f"<BOS>{forms_cat}: lyric, {topics_cat}: dreams <EOS><BOS>{forms_cat}: whatever, {topics_cat}: whatever<EOS><EOP>"
+        + f"<BOS>{forms_cat}:?, {topics_cat}: happiness <EOS><BOS>{forms_cat}: whatever, {topics_cat}: whatever<EOS><EOP>"
+        + f"<BOS>{forms_cat}: ?, {topics_cat}: sea<EOS><BOS>1st verse<EOS><BOS>{forms_cat}: whatever, {topics_cat}: whatever<EOS><EOP>"
+        + f"<BOS>{forms_cat}: free-style, {topics_cat}: ?<EOS><BOS>{forms_cat}: whatever, {topics_cat}: whatever<EOS><EOP>"
+        + f"<BOS>{forms_cat}: ?, {topics_cat}:? <EOS><BOS>{forms_cat}: whatever, {topics_cat}: whatever<EOS><EOP>"
+        + f"<BOS>{forms_cat}: lyric"
+    )
+    text_kv2 = f"{topics_cat}: love<EOS><BOS>First verse<EOS>"
+    text_exp = (
+        f"<BOS>This is a poem with sonnet form about sky: <EOS><EOP>"
+        + f"<BOS>This is a poem with lyric form about dreams: <EOS><BOS>This is a poem with whatever form about whatever <EOS><EOP>"
+        + f"<BOS>This is a poem with ? form about happiness: <EOS><BOS>This a poem with whatever form about whatever: <EOS><EOP>"
+        + f"<BOS>This is a poem with  ? form about sea:<EOS><BOS>1st verse<EOS><BOS>This is a poem with whatever form about whatever<EOS><EOP>"
+        + f"<BOS>This is a poem with free-style form about ?:<EOS><BOS>This is a poem with whatever form about whatever<EOS><EOP>"
+        # '?' could appear joined because the decoder of some tokenizers removes the spaces between a word and the question mark 
+        + f"<BOS>This is a poem with? form about?: <EOS><BOS>First verse ...<EOS><EOP>"
+        + f"<BOS>This is a poem with lyric"
+    )
+    text_exp2 = f"about love: <EOS><BOS>First verse<EOS>"
+
+    actual_labels_from_kv = decoder_kv.decode_labels(text_kv, file_conf)
+    actual_labels_from_kv2 = decoder_kv.decode_labels(text_kv2, file_conf)    
+    actual_labels_from_exp = decoder_exp.decode_labels(text_exp, file_conf)
+    actual_labels_from_exp2 = decoder_exp.decode_labels(text_exp2, file_conf)
+
+    expected_labels = [
+        {forms_cat: 'sonnet', topics_cat: 'sky'},
+        {forms_cat: 'lyric', topics_cat: 'dreams'},
+        {forms_cat: '', topics_cat: 'happiness'},
+        {forms_cat: '', topics_cat: 'sea'},
+        {forms_cat: 'free-style', topics_cat: ''},
+        {forms_cat: '', topics_cat: ''},
+        {forms_cat: 'lyric', topics_cat: ''},
+    ]
+    expected_labels2 = [{forms_cat: '', topics_cat: 'love'}]
+
+    assert actual_labels_from_kv == expected_labels
+    assert actual_labels_from_kv2 == expected_labels2
+    assert actual_labels_from_exp == expected_labels
+    assert actual_labels_from_exp2 == expected_labels2
 
 
 def test_build_labeled_dfs_from_splits():
