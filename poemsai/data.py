@@ -1,19 +1,27 @@
+from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass
-from poemsai.config import get_config_value
 from enum import auto, Enum
 import json
 import numpy as np
 import os
 import pandas as pd
 from pathlib import Path
+from poemsai.config import get_config_value
+from poemsai.hf_utils import get_model_id
 import re
-from typing import List, Tuple
+from transformers import AutoModelForSequenceClassification, AutoTokenizer, TextClassificationPipeline
+from typing import Callable, Dict, List, Optional, Tuple, Union
 
 
-__all__ = ['Lang', 'lang_to_str', 'DataSource', 'get_ds_path', 'get_text_files', 'get_data_sources',
-           'SplitterFactory', 'data_splits_to_df', 'PoemsDfReader', 'PoemsFileReader', 
-           'ComposedPoemsReader', 'ReaderFactory', 'PoemsFileConfig', 'PoemsFileWriter', 
-           'merge_poems', 
+__all__ = [
+    'Lang', 'lang_to_str', 'DataSource', 'get_ds_path', 'get_text_files', 'get_file_lines',
+    'get_ds_root_placeholder', 'get_data_sources', 'SplitterFactory', 'data_splits_to_df', 
+    'PoemsDfReader', 'PoemsFileReader', 'ComposedPoemsReader', 'ReaderFactory', 'PoemsFileConfig', 
+    'PoemsIOWriter', 'merge_poems', 'DfCache', 'LabelsType', 'label_type_to_str', 'LabeledPoem', 
+    'LabeledPoemsSplitsDfContentReader', 'LabeledPoemsSplitsDfReader', 'LabeledPoemsIOWriter', 
+    'BaseLabelsWriter', 'LabelsWriterStd', 'LabelsWriterKeyValue', 'LabelsWriterKeyValueMultiverse', 
+    'LabelsWriterExplained', 'LabelsDecoderKeyValue', 'LabelsDecoderExplained', 'build_labeled_dfs_from_splits', 
+    'LabelsEstimator',
 ]
 
 
@@ -35,13 +43,23 @@ POEM_NAME_DF_COL = 'Poem name'
 POEM_LOCATION_DF_COL = 'Location'
 
 
+DS_ROOTS_CONFIG_KEYS = {
+    DataSource.Marcos: 'OWN_DS_ROOT',
+    DataSource.Kaggle: 'KAGGLE_DS_ROOT'
+}
+
+
+def get_ds_root_path(source:DataSource):
+    return get_config_value(DS_ROOTS_CONFIG_KEYS[source])
+
+
 def get_ds_path(lang:Lang, source:DataSource):
     assert source in (DataSource.Marcos, DataSource.Kaggle), 'Not implemented for given DataSource'
     if source == DataSource.Marcos:
         path = Path(f'dataset/marcos_de_la_fuente.txt/{lang_to_str(lang)}.txt')
     elif source == DataSource.Kaggle:
         relative_path = 'poemsdataset' if lang == Lang.English else 'spanish-poetry-dataset/poems.csv'
-        path = Path(get_config_value('KAGGLE_DS_ROOT'))/relative_path
+        path = Path(get_ds_root_path(source))/relative_path
     return path.resolve()
 
 
@@ -57,18 +75,27 @@ def get_text_files(path:Path):
     return result
 
 
+def get_file_lines(path:Path) -> List[str]:
+    with open(path, 'r', encoding='utf-8') as f:
+        text = f.readlines()
+    return text 
+
+
+def get_ds_root_placeholder(source:DataSource):
+    return f'[{DS_ROOTS_CONFIG_KEYS[source]}]'
+
+
 def _replace_ds_root_w_placeholder(path_str:str):
     path_str = path_str.replace(os.sep, '/')
-    ds_roots_keys = ['KAGGLE_DS_ROOT', 'OWN_DS_ROOT']
-    ds_roots = [(get_config_value(key), key) for key in ds_roots_keys]
-    for ds_root, ds_root_key in ds_roots:
+    ds_roots = [(get_ds_root_path(source), get_ds_root_placeholder(source)) for source in DataSource]
+    for ds_root, ds_root_placeholder in ds_roots:
         ds_root = str(Path(ds_root).resolve()).replace(os.sep, '/')
         try:
             ds_root_idx = path_str.index(ds_root)
         except ValueError:
             ds_root_idx = None
         if ds_root_idx == 0:
-            return path_str.replace(ds_root, f'[{ds_root_key}]')
+            return path_str.replace(ds_root, ds_root_placeholder)
     return path_str
 
 
@@ -109,8 +136,8 @@ class PoemsDf:
     def to_metadata_df(self):
         df = pd.DataFrame(columns=[POEM_NAME_DF_COL, POEM_LOCATION_DF_COL])
         df[POEM_NAME_DF_COL] = self.df[self.name_column]
-        df[POEM_LOCATION_DF_COL] = [f'{_replace_ds_root_w_placeholder(str(self.origin))}[{i}]' 
-                                    for i in range(len(self.df))]
+        df[POEM_LOCATION_DF_COL] = [f'{_replace_ds_root_w_placeholder(str(self.origin))}[{self.poems_column}:{i}]' 
+                                    for i in self.df.index]
         return df
 
     @classmethod
@@ -201,23 +228,25 @@ class PoemsDfReader():
 
     
 class PoemsFileReader():
-    def __init__(self, poems_list:PoemsFileList):
+    def __init__(self, poems_list:PoemsFileList, encoding='utf-8'):
         self.poems_list = poems_list
+        self.encoding = encoding
     
     def __iter__(self):
-        return FilesIterator(list(self.poems_list))
+        return FilesIterator(list(self.poems_list), self.encoding)
     
     
 class FilesIterator():
-    def __init__(self, paths):
+    def __init__(self, paths, encoding='utf-8'):
         self.paths = paths
+        self.encoding = encoding
         self.idx = 0
         
     def __next__(self):
         if self.idx < len(self.paths):
             path = self.paths[self.idx]
             self.idx += 1
-            with open(path, 'r') as f:
+            with open(path, 'r', encoding=self.encoding) as f:
                 text = f.readlines()
             return text    
         raise StopIteration 
@@ -266,23 +295,23 @@ class PoemsFileConfig:
         return cls(**attrs_dict)
 
 
-class PoemsFileWriter():
+class PoemsIOWriter():
     def __init__(self, open_file, conf:PoemsFileConfig):
         self.file = open_file
         self.conf = conf
-        self.meaningful_chars_pattern = re.compile("[a-zA-Z0-9]")
+        self.meaningful_chars_pattern = re.compile("[a-zA-Z0-9\?]")
         self.multispace_pattern = re.compile(" {2,}") if conf.remove_multispaces else None
         self.eol_punctuation_pattern = re.compile('[ .,;\?\!\-\\\:]+$')
         
-    def _write_verse(self, verse, endofpoem=False, prev_verses_last_word:List[str]=None):
+    def write_verse(self, verse, endofpoem=False, prev_verses_last_word:List[str]=None):
         last_word = ''
-        if self.meaningful_chars_pattern.search(verse) is None:
+        if (not endofpoem) and (self.meaningful_chars_pattern.search(verse) is None):
             return last_word
         if self.multispace_pattern is not None:
             verse = self.multispace_pattern.sub(" ", verse)
         verse = verse.strip()
 
-        if len(verse) > 0:
+        if (len(verse) > 0) or endofpoem:
             last_word = self.eol_punctuation_pattern.sub('', verse).split(' ')[-1]
             verse_end = self.conf.end_of_verse_token
             if endofpoem: verse_end += self.conf.end_of_poem_token
@@ -293,17 +322,341 @@ class PoemsFileWriter():
                          else '')
             encoded_verse = f'{prev_ends}{self.conf.beginning_of_verse_token}{verse} {verse_end}'
             self.file.write(encoded_verse)
+
         return last_word
 
     def write_poem(self, poem_lines:List[str]):
         verses_endings = []
         for line in poem_lines[:-1]:
-            last_word = self._write_verse(line, prev_verses_last_word=verses_endings)
+            last_word = self.write_verse(line, prev_verses_last_word=verses_endings)
             if last_word != '': verses_endings.append(last_word)
         if len(poem_lines) > 0:
-            self._write_verse(poem_lines[-1], endofpoem=True, prev_verses_last_word=verses_endings)
+            self.write_verse(poem_lines[-1], endofpoem=True, prev_verses_last_word=verses_endings)
 
                     
 def merge_poems(poems_reader, poems_writer):
     for poem_lines in poems_reader:
         poems_writer.write_poem(poem_lines)
+
+
+class DfCache():
+    def __init__(self):
+        self.dfs_dict = dict()
+        
+    def get(self, path:Union[str,Path]):
+        path = str(path)
+        if path not in self.dfs_dict:
+            self.dfs_dict[path] = pd.read_csv(path)
+        return self.dfs_dict[path]
+        
+    def clear(self):
+        self.dfs_dict.clear()
+
+
+class LabelsType(Enum):
+    Forms = "forms"
+    Topics = "topics"
+    All = "form_and_topic"
+
+
+def label_type_to_str(label_type:LabelsType):
+    return label_type.value[:-1] if label_type != LabelsType.All else label_type.value
+
+
+class LabeledPoem:
+    def __init__(self, poem_lines:List[str], labels:dict):
+        self.poem_lines = poem_lines
+        self.labels = labels
+        
+    def __repr__(self):
+        return f'[Labels]: {self.labels}\n[Content]: {self.poem_lines}'
+
+
+class PoemsSplitsDfContentReader:
+    def __init__(self):
+        self.df_cache = DfCache()
+
+    def _location_is_just_path(self, location:str):
+        return not location.endswith(']')
+    
+    def _location_to_path(self, location:str) -> Path:
+        location_is_just_path = self._location_is_just_path(location)
+        if location_is_just_path:
+            return Path(location)
+        else:
+            assert '[' in location, f"Missing character '[' or unexpected character ']' in splits DataFrame for location {location}"
+            return Path(location[:location.rindex('[')])
+        
+    def extract_poem_lines(self, location:str) -> List[str]:
+        path = self._location_to_path(location)
+        if self._location_is_just_path(location):
+            return get_file_lines(path)
+        else:
+            assert path.suffix.lower() == '.csv',(
+                f'Found location with [identifier] {location} in splits DataFrame, but only csv extension is supported for locations with identifiers'
+            )
+            df = self.df_cache.get(path)
+            location_id = location[location.rindex('[')+1:-1]
+            df_col, df_row = location_id.split(':')
+            poem_content = df.iloc[int(df_row)][df_col]
+            return poem_content.split('\n')
+
+
+class LabeledPoemsSplitsDfReader:
+    def __init__(self, df:pd.DataFrame, label_func:Callable[[str], dict]=None):
+        self.df = df
+        self.label_func = label_func if label_func is not None else self._default_label_func
+        self.content_reader = PoemsSplitsDfContentReader()
+        
+    def _default_label_func(self, location:str) -> dict:
+        if isinstance(location, str): location = Path(location)
+        return {'cat1': location.parent.name}
+            
+    def __iter__(self):
+        locations = [row[POEM_LOCATION_DF_COL] for _, row in self.df.iterrows()]
+        return (LabeledPoem(self.content_reader.extract_poem_lines(loc), self.label_func(loc)) 
+                for loc in locations if self.content_reader._location_to_path(loc).exists())
+
+
+class BaseLabelsWriter(ABC):
+    @abstractmethod
+    def write_labels(self, labels:dict, poems_writer:PoemsIOWriter):
+        pass
+
+    @abstractmethod
+    def num_verses_needed(self, n_total_categories:int) -> int:
+        pass
+
+
+class LabelsWriterStd(BaseLabelsWriter):
+    def write_labels(self, labels:dict, poems_writer:PoemsIOWriter):
+        for label in labels.values():
+            if label == '': label = '?'
+            poems_writer.write_verse(label)
+
+    def num_verses_needed(self, n_total_categories:int) -> int:
+        return n_total_categories
+
+
+class LabelsWriterKeyValue(BaseLabelsWriter):   
+    def write_labels(self, labels:dict, poems_writer:PoemsIOWriter):
+        def qm_if_empty(label): return '?' if label == '' else label
+        labels_verse = ', '.join(f'{k}: {qm_if_empty(v)}' for k, v in labels.items())
+        poems_writer.write_verse(labels_verse)
+
+    def num_verses_needed(self, n_total_categories:int) -> int:
+        return 1
+
+
+class LabelsWriterKeyValueMultiverse(BaseLabelsWriter):
+    def write_labels(self, labels:dict, poems_writer:PoemsIOWriter):
+        def qm_if_empty(label): return '?' if label == '' else label
+        for k, v in labels.items():
+            poems_writer.write_verse(f'{k}: {qm_if_empty(v)}')
+
+    def num_verses_needed(self, n_total_categories:int) -> int:
+        return n_total_categories
+
+
+class LabelsWriterExplained(BaseLabelsWriter):
+    def __init__(self, omit_empty=False):
+        self.omit_empty = omit_empty
+        
+    def write_labels(self, labels:dict, poems_writer:PoemsIOWriter):
+        labels_verse = 'This is a poem'
+        for cat, label in labels.items():
+            if label == '': 
+                if self.omit_empty: 
+                    continue
+                else: 
+                    label = '?'
+            if cat == label_type_to_str(LabelsType.Topics):
+                labels_verse += f' about {label}'
+            elif cat == label_type_to_str(LabelsType.Forms):
+                labels_verse += f' with {label} form'
+        labels_verse += ':'
+        poems_writer.write_verse(labels_verse)
+
+    def num_verses_needed(self, n_total_categories:int) -> int:
+        return 1
+
+
+class BaseLabelsDecoder(ABC):
+    """Child classes must define a method of extracting the labels from a poem(s) text."""
+    @abstractmethod
+    def decode_labels(self, text:str, file_config:PoemsFileConfig) -> Dict[LabelsType, str]:
+        pass
+
+
+class LabelsDecoderKeyValue(BaseLabelsDecoder):
+    """Extracts the labels from a poem(s) text with the format used by `LabelsWriterKeyValue`.
+    
+    It assumes that `file_config.end_of_verse_token` and `file_config.end_of_poem_token` are
+    defined (not empty).
+    """
+    def decode_labels(self, text:str, file_config:PoemsFileConfig) -> Dict[LabelsType, str]:
+        labels = []
+        text = text.replace(file_config.beginning_of_verse_token, '')
+        first_verse_by_poem = [
+            poem_text.split(file_config.end_of_verse_token)[0]
+            for poem_text in text.split(file_config.end_of_poem_token)
+            if len(poem_text) > 0
+        ]
+
+        topic_key = label_type_to_str(LabelsType.Topics)#+":"
+        form_key = label_type_to_str(LabelsType.Forms)#+":"
+        unknown_str = "?"
+
+        for labels_verse in first_verse_by_poem:
+            key_value_list = labels_verse.split(', ')
+            poem_labels = dict()
+            labels.append(poem_labels)
+            
+            for key_value_str in key_value_list:
+                if key_value_str.startswith(topic_key):
+                    value_str = key_value_str[len(topic_key)+1:].strip()
+                    poem_labels[topic_key] = value_str if value_str != unknown_str else ''
+                elif key_value_str.startswith(form_key):
+                    value_str = key_value_str[len(form_key)+1:].strip()
+                    poem_labels[form_key] = value_str if value_str != unknown_str else ''
+            
+            if topic_key not in poem_labels: poem_labels[topic_key] = ''
+            if form_key not in poem_labels: poem_labels[form_key] = ''
+
+        return labels
+
+
+class LabelsDecoderExplained(BaseLabelsDecoder):
+    """Extracts the labels from a poem(s) text with the format used by `LabelsWriterExplained`.
+    
+    It assumes that `file_config.end_of_verse_token` and `file_config.end_of_poem_token` are
+    defined (not empty).
+    """
+    def decode_labels(self, text:str, file_config:PoemsFileConfig) -> Dict[LabelsType, str]:
+        labels = []
+        text = text.replace(file_config.beginning_of_verse_token, '')
+        first_verse_by_poem = [
+            poem_text.split(file_config.end_of_verse_token)[0]
+            for poem_text in text.split(file_config.end_of_poem_token)
+            if len(poem_text) > 0
+        ]
+        topic_key = label_type_to_str(LabelsType.Topics)
+        form_key = label_type_to_str(LabelsType.Forms)
+
+        for labels_verse in first_verse_by_poem:
+            labels_verse = labels_verse.strip()
+            if labels_verse[-1] == ":": 
+                labels_verse = labels_verse[:-1]
+            verse_tokens = labels_verse.split(' ')
+            poem_labels = dict()
+            labels.append(poem_labels)
+            
+            try:
+                about_idx = verse_tokens.index('about')
+            except ValueError:
+                about_idx = -1
+            poem_labels[topic_key] = (
+                self._empty_label_if_unknown(verse_tokens[about_idx + 1].strip())
+                if -1 < about_idx < (len(verse_tokens) - 1)
+                else ''
+            )
+            try:
+                with_idx = verse_tokens.index('with')
+            except ValueError:
+                with_idx = -1
+            poem_labels[form_key] = (
+                self._empty_label_if_unknown(verse_tokens[with_idx + 1].strip())
+                if -1 < with_idx < (len(verse_tokens) - 1)
+                else ''
+            )
+            
+        return labels
+    
+    def _empty_label_if_unknown(self, label):
+        return '' if label == '?' else label
+
+
+class LabeledPoemsIOWriter():
+    def __init__(self, open_file, conf:PoemsFileConfig, labels_writer:BaseLabelsWriter=None):
+        self.poems_file_writer = PoemsIOWriter(open_file, conf)
+        self.labels_writer = labels_writer if labels_writer is not None else LabelsWriterStd()
+        
+    def write_poem(self, labeled_poem:LabeledPoem):
+        self.labels_writer.write_labels(labeled_poem.labels, self.poems_file_writer)
+        self.poems_file_writer.write_poem(labeled_poem.poem_lines)
+
+
+def build_labeled_dfs_from_splits(splits_df:pd.DataFrame, labels_type:LabelsType):
+    kaggle_ds_root_placeholder = get_ds_root_placeholder(DataSource.Kaggle)
+    kaggle_ds_root = get_ds_root_path(DataSource.Kaggle)
+    kaggle_ds_splits_df = splits_df.copy()[
+        splits_df.Location.str.contains(f'/{labels_type.value}/', regex=False)
+        & splits_df.Location.str.contains(kaggle_ds_root_placeholder, regex=False)
+    ]
+    kaggle_ds_splits_df.Location = kaggle_ds_splits_df.Location.str.replace(kaggle_ds_root_placeholder, 
+                                                                            kaggle_ds_root,
+                                                                            regex=False)
+    
+    train_split_df = kaggle_ds_splits_df[kaggle_ds_splits_df.Split == 'Train']
+    valid_split_df = kaggle_ds_splits_df[kaggle_ds_splits_df.Split == 'Validation']
+    
+    def _get_content_of_file_path(path:str):
+        if not Path(path).exists():
+            # Some poems contain strange characters in the title that don't match 
+            # the original poem name, but they are about 1% and some are in french 
+            # or other languages, so we don't mind discarding them
+            #print('skipped', path)
+            return ''
+        with open(path) as f:
+            return f.read()
+        
+    def _split_to_labeled_df(split_df):
+        labeled_df = pd.DataFrame({
+            'text': split_df.Location.map(_get_content_of_file_path), 
+            'labels': split_df.Location.map(lambda path: Path(path).parent.name), 
+        })
+        return labeled_df
+    
+    train_df = _split_to_labeled_df(train_split_df)
+    valid_df = _split_to_labeled_df(valid_split_df)
+    train_empty_selector = train_df.text == ''
+    valid_empty_selector = valid_df.text == ''
+    train_df = train_df[~train_empty_selector]
+    valid_df = valid_df[~valid_empty_selector]
+    
+    return train_df, valid_df
+
+
+class LabelsEstimator:
+    """Class that packs a trained classifier for each `LabelsType` category.
+
+    It assumes there's a classifier in the HuggingFace Hub of the user `hf_user`
+    for each category and with a name that follows the same pattern as the models
+    trained with the notebook 'train_poems_classifier.ipynb'.
+
+    Args:
+        base_model_name: name of the architecture of the model, as defined by Hugging
+            Face. For instance: gpt2, distilbert, big_bird, ...
+        hf_user: Hugging Face username of the owner of the models
+        hf_token (optional): Hugging Face access token of the owner of the models, with
+            read permission. Only needed if any of the models is private.
+        device: Device ordinal for CPU/GPU supports. Setting this to -1 will leverage CPU, 
+            a positive will run the model on the associated CUDA device id.
+    """
+    def __init__(self, base_model_name:str, hf_user, hf_token:Optional[str]=None, device=-1):
+        self.clf_pipelines = dict()
+        for cat in LabelsType:
+            if cat == LabelsType.All: continue
+            checkpoint_name = f'{base_model_name}-poems-clf-by-{label_type_to_str(cat)}.en'
+            model_id = get_model_id(checkpoint_name, hf_user)
+            clf = AutoModelForSequenceClassification.from_pretrained(model_id, use_auth_token=hf_token)
+            tokenizer = AutoTokenizer.from_pretrained(model_id, use_auth_token=hf_token)
+            self.clf_pipelines[cat] = TextClassificationPipeline(
+                model=clf, 
+                tokenizer=tokenizer, 
+                device=device,     
+            )
+
+    def predict(self, cat:LabelsType, poem_lines:List[str]) -> str:
+        poem_content = '\n'.join(poem_lines)
+        return self.clf_pipelines[cat](poem_content, truncation=True)[0]['label']

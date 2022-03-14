@@ -24,7 +24,7 @@ from transformers.trainer_pt_utils import (
     nested_truncate,
 )
 from transformers.utils import logging
-from typing import Callable, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 
 if is_torch_tpu_available():
@@ -37,10 +37,20 @@ logger = logging.get_logger(__name__)
 
 
 class PoemsTrainer(Trainer):
-    def __init__(self, *args, preprocess_logits_for_metrics:Callable=None, **kwargs):
+    def __init__(
+        self, 
+        *args, 
+        preprocess_logits_for_metrics:Callable=None, 
+        extra_loss_fns:Dict[str, Tuple[Callable, float]]=None, 
+        **kwargs
+    ):
         super().__init__(*args, **kwargs)
+        # TODO: delete this parameter when next HuggingFace release (4.17) is out
         self.preprocess_logits_for_metrics = preprocess_logits_for_metrics
+        self.extra_loss_fns = extra_loss_fns if extra_loss_fns is not None else {}
+        self.extra_tr_losses = dict()        
 
+    # TODO: delete this method when next HuggingFace release (4.17) is out
     def evaluation_loop(
         self,
         dataloader: DataLoader,
@@ -209,4 +219,74 @@ class PoemsTrainer(Trainer):
             if not key.startswith(f"{metric_key_prefix}_"):
                 metrics[f"{metric_key_prefix}_{key}"] = metrics.pop(key)
 
+        for loss_name, loss_vals in self.extra_tr_losses.items():
+            # 'xtra_' is added to force the full loss name to be shown in notebooks,
+            # the part before the first underscore is discarded by HuggingFace.
+            metrics['xtra_' + loss_name] = loss_vals.cpu().mean().item()
+        self.extra_tr_losses.clear()
+
         return EvalLoopOutput(predictions=all_preds, label_ids=all_labels, metrics=metrics, num_samples=num_samples)
+
+    def compute_loss(self, model, inputs, return_outputs=False):
+        """
+        How the loss is computed by Trainer. By default, all models return the loss in the first element.
+
+        Subclass and override for custom behavior.
+        """
+        if self.label_smoother is not None and "labels" in inputs:
+            labels = inputs.pop("labels")
+        else:
+            labels = None
+        outputs = model(**inputs)
+        # Save past state if it exists
+        # TODO: this needs to be fixed and made cleaner later.
+        if self.args.past_index >= 0:
+            self._past = outputs[self.args.past_index]
+
+        if labels is not None:
+            loss = self.label_smoother(outputs, labels)
+        else:
+            # We don't use .loss here since the model may return tuples instead of ModelOutput.
+            loss = outputs["loss"] if isinstance(outputs, dict) else outputs[0]
+        
+        if "labels" in inputs:
+            if labels is None: labels = inputs["labels"]
+            extra_losses = dict()
+            # This is a shortcut to avoid duplicating more code of Trainer,
+            # it relies on the fact that outputs are only needed for evaluation
+            is_eval_loss = return_outputs
+            effective_bs = outputs["logits"].shape[0]
+            
+            if len(self.extra_loss_fns) > 0:
+                extra_losses['orig loss'] = loss.detach().repeat(effective_bs)
+            for loss_name, (loss_fn, w) in self.extra_loss_fns.items():
+                extra_loss = loss_fn(outputs["logits"], labels)
+                if (not is_eval_loss) and (self.args.gradient_accumulation_steps > 1) and (not self.deepspeed):
+                    # deepspeed handles loss scaling by gradient_accumulation_steps in its `backward`
+                    extra_loss = extra_loss / self.args.gradient_accumulation_steps
+                loss += w * extra_loss
+                extra_losses[loss_name] = extra_loss.detach().repeat(effective_bs)
+
+            self._cache_extra_tr_losses(extra_losses, is_eval=is_eval_loss)
+
+        return (loss, outputs) if return_outputs else loss
+    
+    def _cache_extra_tr_losses(self, extra_tr_losses, is_eval=False):
+        for loss_name, loss_vals in extra_tr_losses.items():
+            prefix = 'Validation ' if is_eval else 'Training '
+            loss_name = prefix + loss_name
+            if loss_name not in self.extra_tr_losses:
+                self.extra_tr_losses[loss_name] = loss_vals
+            else:
+                self.extra_tr_losses[loss_name] = torch.cat((self.extra_tr_losses[loss_name], loss_vals))
+
+    # TODO: uncomment this and delete the other evaluation_loop when next HuggingFace release (4.17 is out)
+    # def evaluation_loop(self, *args, **kwargs) -> EvalLoopOutput:
+    #     output = super().evaluation_loop(*args, **kwargs)
+    #     for loss_name, loss_vals in self.extra_tr_losses.items():
+    #         # 'xtra_' is added to force the full loss name to be shown in notebooks,
+    #         # the part before the first underscore is discarded by HuggingFace.
+    #         output.metrics['xtra_' + loss_name] = loss_vals.cpu().mean().item()
+    #     self.extra_tr_losses.clear()
+    #     return output          
+ 
