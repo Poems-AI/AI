@@ -199,11 +199,11 @@ class FakeClf(nn.Module):
             new_embeddings.weight[:n, :] = old_embeddings.weight[:n, :]
         self.embedding = new_embeddings
     
-    def forward(self, input_ids=None, input_embeds=None):
-        if input_embeds is None:
+    def forward(self, input_ids=None, inputs_embeds=None):
+        if inputs_embeds is None:
             assert input_ids is not None
-            input_embeds = self.embedding(input_ids)
-        out = self.linear(input_embeds[:, 0])
+            inputs_embeds = self.embedding(input_ids)
+        out = self.linear(inputs_embeds[:, 0])
         return FakeClfOut(logits=out)
 
 

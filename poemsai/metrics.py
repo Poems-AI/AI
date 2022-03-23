@@ -563,7 +563,7 @@ class ConditionalGenLoss:
                 clf_emb_out = F.softmax(poems_tensor, dim=-1) @ clf_emb_w
                 assert clf_emb_out.requires_grad
                 # size: (n poems in batch[i] - 1) x n classes
-                clf_preds = self.clf(input_embeds=clf_emb_out).logits
+                clf_preds = self.clf(inputs_embeds=clf_emb_out).logits
 
                 non_empty_label_idxs = []
 
