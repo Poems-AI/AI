@@ -451,12 +451,18 @@ class ConditionalGenLoss:
         gen_eop_token_id: id of the end of poem token in the generator vocabulary.
         gen_bov_token_id: id of the beginning of verse token in the generator vocabulary.
         gen_eov_token_id: id of the end of verse token in the generator vocabulary.
+        device: device, with Pytorch format, where the input tensors are expected to be. If needed, `clf` weights are 
+            moved to this device.
     """
-    def __init__(self, clf:nn.Module, clf_tokenizer, gen_tokenizer, cat:LabelsType, 
-                 labels_decoder:BaseLabelsDecoder, file_config:PoemsFileConfig, gen_eop_token_id:int, 
-                 gen_bov_token_id:int=None, gen_eov_token_id:int=None):
+    def __init__(
+        self, clf:nn.Module, clf_tokenizer, gen_tokenizer, cat:LabelsType, labels_decoder:BaseLabelsDecoder, 
+        file_config:PoemsFileConfig, gen_eop_token_id:int, gen_bov_token_id:int=None, gen_eov_token_id:int=None, 
+        device=None
+    ):
         self.clf = clf
         self.clf.eval()
+        if device is not None:
+            self.clf.to(device)
         self.clf_tokenizer = clf_tokenizer
         self.gen_tokenizer = gen_tokenizer
         self.cat = cat
