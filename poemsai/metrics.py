@@ -587,7 +587,8 @@ class ConditionalGenLoss:
                 clf_label_ids = []
                 for i, labels_by_cat in enumerate(labels_by_poem):
                     label = labels_by_cat[label_type_to_str(self.cat)]
-                    if label == '': continue
+                    if (label == '') or (label not in self.clf.config.label2id):
+                        continue
                     clf_label_ids.append(self.clf.config.label2id[label])
                     non_empty_label_idxs.append(i)
                 
