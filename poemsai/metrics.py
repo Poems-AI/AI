@@ -510,12 +510,11 @@ class ConditionalGenLoss:
         poems_tensor_list = torch.split(single_gen_output, split_sizes, dim=0)[1:]
         # size: (n_poems in single_gen_target - 1) x (max_seq_len of poems in single_gen_target) x vocab_sz
         poems_tensor = torch.nn.utils.rnn.pad_sequence(poems_tensor_list, batch_first=True, padding_value=float("-inf"))
-        assert poems_tensor.requires_grad
 
         # Set the pad_token_id as the max logit for the padded positions
         clf_pad_token_id = self.clf_tokenizer.pad_token_id
         for i, poem_len in enumerate(split_sizes[1:]):
-            poems_tensor[i, poem_len:, clf_pad_token_id] = 1e6
+            poems_tensor[i, poem_len:, clf_pad_token_id] = 1e12 if poems_tensor.dtype == torch.float32 else 1e4
 
         labels_by_poem = self.labels_decoder.decode_labels(
             self.gen_tokenizer.decode(single_gen_target[split_sizes[0]:].tolist()), self.file_config
@@ -559,7 +558,7 @@ class ConditionalGenLoss:
         # should be skipped in that case.
         bs = gen_output.shape[0]
         clf_emb_w = self.clf.get_input_embeddings().weight
-        loss = torch.tensor(0., device=gen_output.device, requires_grad=True)
+        loss = gen_output.new_zeros([])
         gen_output = self._replace_special_tokens_for_clf(gen_output)
         n_poems = 0
         
