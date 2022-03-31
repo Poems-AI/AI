@@ -10,7 +10,7 @@ from poemsai.data import (
     PoemsFileConfig, PoemsIOWriter, VerseGrouping
 )
 from poemsai.trainer import PoemsTrainer
-from poemsai.torch_utils import get_positions_between
+from poemsai.torch_utils import freeze, get_positions_between
 import tempfile
 from transformers import default_data_collator, TextGenerationPipeline, Trainer, TrainingArguments
 import torch
@@ -466,6 +466,7 @@ class ConditionalGenLoss:
     ):
         self.clf = clf
         self.clf.eval()
+        freeze(self.clf)
         if device is not None:
             self.clf.to(device)
         self.clf_tokenizer = clf_tokenizer

@@ -493,7 +493,7 @@ class LabelsDecoderKeyValue(BaseLabelsDecoder):
     
     It assumes that `file_config.end_of_verse_token` and `file_config.end_of_poem_token` are
     defined (not empty).
-    One of the labels of the last poem could appear truncated if it's and the end of `text`.
+    One of the labels of the last poem could appear truncated if it's at the end of `text`.
     """
     def decode_labels(self, text:str, file_config:PoemsFileConfig) -> List[Dict[LabelsType, str]]:
         labels = []
@@ -532,7 +532,7 @@ class LabelsDecoderExplained(BaseLabelsDecoder):
     
     It assumes that `file_config.end_of_verse_token` and `file_config.end_of_poem_token` are
     defined (not empty).
-    One of the labels of the last poem could appear truncated if it's and the end of `text`.
+    One of the labels of the last poem could appear truncated if it's at the end of `text`.
     """
     def decode_labels(self, text:str, file_config:PoemsFileConfig) -> List[Dict[LabelsType, str]]:
         labels = []
