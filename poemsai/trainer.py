@@ -268,6 +268,7 @@ class PoemsTrainer(Trainer):
                 extra_losses[loss_name] = extra_loss.detach().repeat(effective_bs)
 
             self._cache_extra_tr_losses(extra_losses, is_eval=is_eval_loss)
+            extra_losses.clear()
 
         return (loss, outputs) if return_outputs else loss
     
