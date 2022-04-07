@@ -71,7 +71,7 @@ def preprocess_logits_for_accuracy(logits, labels):
 
 
 def compute_lm_accuracy(eval_preds):
-    """Computes the accuracy given the predictions and labels, contained in `eval_preds`.
+    """Compute the accuracy given the predictions and labels, contained in `eval_preds`.
     
     It assumes the logits have been reduced with argmax(-1) by `preprocess_logits_for_accuracy`.
     """
@@ -86,7 +86,7 @@ def compute_lm_accuracy(eval_preds):
 def eval_model_with_metrics(model, input_filepath, tokenizer, compute_metrics=compute_lm_accuracy,
                             preprocess_logits_for_metrics=preprocess_logits_for_accuracy,
                             bs=16):
-    "Evaluates `model` straightaway with `compute_metrics` using the data contained in `input_filepath`."
+    "Evaluate `model` straightaway with `compute_metrics` using the data contained in `input_filepath`."
     datasets = load_dataset("text", data_files={"eval": input_filepath})
     n_procs = 1
     mlm = False
@@ -109,10 +109,28 @@ def eval_model_with_metrics(model, input_filepath, tokenizer, compute_metrics=co
 
 
 class MetadataLessLoss:
-    "Masks the tokens of the target that are considered metadata before passing them to `inner_loss`."
+    """Wrapper that masks the tokens of the target that are considered metadata before passing them to `inner_loss`.
+    
+    Args:
+        inner_loss: wrapped loss function.
+        begin_verse_id: id of the beginning of verse token.
+        end_verse_id: id of the end of verse token.
+        end_poem_id: id of the end of poem token.
+        ignore_index: id that identifies in the target the tokens that `inner_loss` must ignore to compute the loss.
+        flatten_inner_loss_args: if `True`, the predictions and the masked target are flattened before passing them
+            to `inner_loss`.
+        n_initial_verses_to_ignore: number of initial verses of each poem that must be ignored to compute the loss.
+            This is useful when some kind of labels or tags have been inserted as independent verses at the beginning 
+            of each poem to condition a causal language model but you don't want the predictions for those positions 
+            to be taken into account to compute the loss.
+        pos_0_is_begin_poem: indicate that the first token of each example is expected to be the first token of a poem.
+            When it's `False`, the tokens that appear before the first `begin_verse_id` (or `end_verse_id` if
+             `begin_verse_id` is not given) are ignored, because it's not possible to know if they are metadata 
+             (appear between the end of a verse and the beginning of the next one) or not.
+    """
     def __init__(self, inner_loss:Callable, begin_verse_id=None, end_verse_id=None, 
                  end_poem_id=None, ignore_index=-100, flatten_inner_loss_args=False,
-                 n_initial_verses_to_ignore=0):
+                 n_initial_verses_to_ignore=0, pos_0_is_begin_poem=False):
         self.inner_loss = inner_loss
         self.begin_verse_id = begin_verse_id
         self.end_verse_id = end_verse_id
@@ -120,6 +138,7 @@ class MetadataLessLoss:
         self.ignore_index = ignore_index
         self.flatten_inner_loss_args = flatten_inner_loss_args
         self.n_initial_verses_to_ignore = n_initial_verses_to_ignore
+        self.pos_0_is_begin_poem = pos_0_is_begin_poem
 
     def __call__(self, preds, target):
         target = target.clone()
@@ -168,7 +187,7 @@ class MetadataLessLoss:
                 DONT_KNOW = -1
                 # At the beginning we don't know if we start at the beginning of a poem
                 # because a poem may have been split into two sequences
-                n_verses_completed = DONT_KNOW
+                n_verses_completed = 0 if self.pos_0_is_begin_poem else DONT_KNOW
                 for j in range(seq_len):
                     if target[i][j] == self.end_poem_id:
                         if self.n_initial_verses_to_ignore > 0:
