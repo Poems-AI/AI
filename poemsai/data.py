@@ -586,20 +586,36 @@ class LabeledPoemsIOWriter():
         self.poems_file_writer.write_poem(labeled_poem.poem_lines)
 
 
-def build_labeled_dfs_from_splits(splits_df:pd.DataFrame, labels_type:LabelsType):
+def filter_splits_df(df, labels_type, split):
     kaggle_ds_root_placeholder = get_ds_root_placeholder(DataSource.Kaggle)
-    kaggle_ds_root = get_ds_root_path(DataSource.Kaggle)
-    kaggle_ds_splits_df = splits_df.copy()[
-        splits_df.Location.str.contains(f'/{labels_type.value}/', regex=False)
-        & splits_df.Location.str.contains(kaggle_ds_root_placeholder, regex=False)
+    labels_type_filter = f'/{labels_type.value}/' if labels_type != LabelsType.All else ''
+    # Only the Kaggle datasets have labels
+    kaggle_filter = kaggle_ds_root_placeholder if labels_type != LabelsType.All else ''
+    return df.copy()[
+        df.Location.str.contains(labels_type_filter, regex=False)
+        & df.Location.str.contains(kaggle_filter, regex=False)
+        & (df.Split == split)        
     ]
-    kaggle_ds_splits_df.Location = kaggle_ds_splits_df.Location.str.replace(kaggle_ds_root_placeholder, 
-                                                                            kaggle_ds_root,
-                                                                            regex=False)
-    
-    train_split_df = kaggle_ds_splits_df[kaggle_ds_splits_df.Split == 'Train']
-    valid_split_df = kaggle_ds_splits_df[kaggle_ds_splits_df.Split == 'Validation']
-    
+
+
+def replace_location_placeholder(splits_df):
+    kaggle_ds_root_placeholder = get_ds_root_placeholder(DataSource.Kaggle)
+    own_ds_root_placeholder = get_ds_root_placeholder(DataSource.Marcos)
+    kaggle_ds_root = get_ds_root_path(DataSource.Kaggle)
+    own_ds_root = get_ds_root_path(DataSource.Marcos)
+    splits_df.Location = splits_df.Location.str.replace(kaggle_ds_root_placeholder, 
+                                                        kaggle_ds_root,
+                                                        regex=False)
+    splits_df.Location = splits_df.Location.str.replace(own_ds_root_placeholder, 
+                                                        own_ds_root,
+                                                        regex=False)
+    return splits_df
+
+
+def build_labeled_dfs_from_splits(splits_df:pd.DataFrame, labels_type:LabelsType):
+    train_split_df = replace_location_placeholder(filter_splits_df(splits_df, labels_type, 'Train'))
+    valid_split_df = replace_location_placeholder(filter_splits_df(splits_df, labels_type, 'Validation'))
+        
     def _get_content_of_file_path(path:str):
         if not Path(path).exists():
             # Some poems contain strange characters in the title that don't match 
