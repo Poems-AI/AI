@@ -335,18 +335,23 @@ class MetadataLessLossFast:
         return self.inner_loss(preds, target)
 
 
-def preprocess_logits_for_metadataless_loss(logits, labels):
+def preprocess_logits_for_metadataless_loss(logits, labels, ignore_idx=-100):    
     labels = labels[:, 1:]
     logits = logits[:, :-1]
+    if (ignore_idx is not None) and (ignore_idx < 0):
+        labels = labels.clone()
+        # torch.gather will fail if an index is lower than 0
+        # The gathered logits for the padded positions are irrelevant, so we can take the first
+        labels[labels == ignore_idx] = 0
     return -torch.gather(F.log_softmax(logits, dim=-1), -1, labels[..., None]).squeeze(-1)
 
 
-def get_compute_metrics_metadataless(**loss_init_kargs):
+def get_compute_metrics_metadataless(loss_cls=MetadataLessLoss, **loss_init_kargs):
     "It returns a functon that computes the `MetadataLessLoss` like a HuggingFace metric."
     ignore_index = -100
     def _inner_loss(preds, target): 
         return preds[target != ignore_index].mean()
-    loss_fn = MetadataLessLoss(_inner_loss, ignore_index=ignore_index, **loss_init_kargs)
+    loss_fn = loss_cls(_inner_loss, ignore_index=ignore_index, **loss_init_kargs)
     
     def compute_metadataless_loss(eval_preds):
         # preds just contains the value of the log softmax of the logits for the entries given
