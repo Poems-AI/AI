@@ -108,9 +108,60 @@ def eval_model_with_metrics(model, input_filepath, tokenizer, compute_metrics=co
     return trainer.evaluate()
 
 
+class SimpleMetadataLessLoss:
+    """Wrapper that masks the tokens of the target that are considered metadata before passing them to `inner_loss`.
+    
+    It's a simplified (and faster) version of `MetadataLessLoss` that assumes that the only metadata tokens that appear 
+    in the target are `begin_verse_id` and/or `end_verse_id` and/or `end_poem_id`.
+
+    Args:
+        inner_loss: wrapped loss function.
+        begin_verse_id: id of the beginning of verse token.
+        end_verse_id: id of the end of verse token.
+        end_poem_id: id of the end of poem token.
+        ignore_index: id that identifies in the target the tokens that `inner_loss` must ignore to compute the loss.
+        flatten_inner_loss_args: if `True`, the predictions and the masked target are flattened before passing them
+            to `inner_loss`.
+    """
+    def __init__(self, inner_loss:Callable, begin_verse_id=None, end_verse_id=None, 
+                 end_poem_id=None, ignore_index=-100, flatten_inner_loss_args=False):
+        self.inner_loss = inner_loss
+        self.begin_verse_id = begin_verse_id
+        self.end_verse_id = end_verse_id
+        self.end_poem_id = end_poem_id
+        self.ignore_index = ignore_index
+        self.flatten_inner_loss_args = flatten_inner_loss_args
+
+    def __call__(self, preds, target):
+        target = target.clone()
+
+        mask = None
+        if self.end_verse_id is not None:
+            mask = (target == self.end_poem_id) | (target == self.begin_verse_id)
+        else:
+            mask = target == self.end_poem_id
+
+        if mask is not None:
+            target[mask] = self.ignore_index
+
+        if self.flatten_inner_loss_args:
+            preds = preds.view(-1, preds.shape[-1])
+            target = target.view(-1)
+
+        return self.inner_loss(preds, target)
+
+
 class MetadataLessLoss:
     """Wrapper that masks the tokens of the target that are considered metadata before passing them to `inner_loss`.
     
+    It doesn't mask the `end_verse_id` in order to measure the correctness of the separation in verses of the 
+    predictions. If `end_verse_id` is None, the `begin_verse_id` token isn't masked for the same reason.
+    It always masks:
+    1. The `end_poem_id` tokens.
+    2. Every token between an `end_verse_id` and the next `begin_verse_id`.
+    3. Every token between an `end_poem_id` and the first `begin_verse_id` of the next poem.
+    4. Every token between the last `end_verse_id` of a poem and the `end_poem_id` token.
+
     Args:
         inner_loss: wrapped loss function.
         begin_verse_id: id of the beginning of verse token.

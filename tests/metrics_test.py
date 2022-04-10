@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 import math
 from poemsai.data import LabelsType, LabelsDecoderExplained, PoemsFileConfig
-from poemsai.metrics import compute_lm_metrics, ConditionalGenLoss, MetadataLessLoss
+from poemsai.metrics import compute_lm_metrics, ConditionalGenLoss, MetadataLessLoss, SimpleMetadataLessLoss
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -28,14 +28,52 @@ def test_compute_lm_metrics():
     assert math.isclose(compute_lm_metrics((preds, labels_half), expect_preds=True)[metric], 0.5)
 
 
-def test_metadataless_loss():
-    class FakeLoss:
-        def __init__(self):
-            self.call_args = []
-            
-        def __call__(self, preds, target):
-            self.call_args.append((preds, target))
-            
+class FakeLoss:
+    def __init__(self):
+        self.call_args = []
+        
+    def __call__(self, preds, target):
+        self.call_args.append((preds, target))
+
+
+def test_simple_metadataless_loss():
+    BOV_ID = 97
+    EOV_ID = 98
+    EOP_ID = 99
+    IGN_IDX = -1
+    loss_bov_tag = SimpleMetadataLessLoss(FakeLoss(), begin_verse_id=BOV_ID, end_verse_id=None, 
+                                          end_poem_id=None, ignore_index=IGN_IDX)
+    loss_end_tags = SimpleMetadataLessLoss(FakeLoss(), begin_verse_id=None, end_verse_id=EOV_ID, 
+                                           end_poem_id=EOP_ID, ignore_index=IGN_IDX)
+    loss_all_tags = SimpleMetadataLessLoss(FakeLoss(), begin_verse_id=BOV_ID, end_verse_id=EOV_ID, 
+                                          end_poem_id=EOP_ID, ignore_index=IGN_IDX)
+    labels = torch.Tensor([
+        [1, BOV_ID, 2, 3, EOV_ID, BOV_ID, 3, EOV_ID, EOP_ID, BOV_ID, 4, 5, EOV_ID, BOV_ID, 6, EOV_ID, EOP_ID, BOV_ID, 7, 8, 9, EOV_ID],
+        [BOV_ID, 1, 2, EOV_ID, 24, 35, BOV_ID, 3, EOV_ID, 28, EOP_ID, 23, 34, 56, BOV_ID, 4, EOV_ID, 77, 88, BOV_ID, 5, 6],
+    ])
+    preds = torch.rand(*labels.shape, 4)
+    loss_bov_tag(preds, labels)
+    loss_end_tags(preds, labels)
+    loss_all_tags(preds, labels)
+    expected_loss_bov_target = labels
+    expected_loss_end_tags_target = torch.Tensor([
+        [1, BOV_ID, 2, 3, EOV_ID, BOV_ID, 3, EOV_ID, IGN_IDX, BOV_ID, 4, 5, EOV_ID, BOV_ID, 6, EOV_ID, IGN_IDX, BOV_ID, 7, 8, 9, EOV_ID],
+        [BOV_ID, 1, 2, EOV_ID, 24, 35, BOV_ID, 3, EOV_ID, 28, IGN_IDX, 23, 34, 56, BOV_ID, 4, EOV_ID, 77, 88, BOV_ID, 5, 6],
+    ])
+    expected_loss_all_tags_target = torch.Tensor([
+        [1, IGN_IDX, 2, 3, EOV_ID, IGN_IDX, 3, EOV_ID, IGN_IDX, IGN_IDX, 4, 5, EOV_ID, IGN_IDX, 6, EOV_ID, IGN_IDX, IGN_IDX, 7, 8, 9, EOV_ID],
+        [IGN_IDX, 1, 2, EOV_ID, 24, 35, IGN_IDX, 3, EOV_ID, 28, IGN_IDX, 23, 34, 56, IGN_IDX, 4, EOV_ID, 77, 88, IGN_IDX, 5, 6],
+    ])
+
+    assert loss_bov_tag.inner_loss.call_args[0][0] is preds
+    assert torch.all(loss_bov_tag.inner_loss.call_args[0][1] == expected_loss_bov_target)
+    assert loss_end_tags.inner_loss.call_args[0][0] is preds
+    assert torch.all(loss_end_tags.inner_loss.call_args[0][1] == expected_loss_end_tags_target)
+    assert loss_all_tags.inner_loss.call_args[0][0] is preds
+    assert torch.all(loss_all_tags.inner_loss.call_args[0][1] == expected_loss_all_tags_target)
+
+
+def test_metadataless_loss():   
     BOV_ID = 97
     EOV_ID = 98
     EOP_ID = 99
