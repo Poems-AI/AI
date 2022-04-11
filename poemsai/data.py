@@ -1,6 +1,8 @@
 from abc import ABC, abstractmethod
+from datasets import Dataset
 from dataclasses import asdict, dataclass
 from enum import auto, Enum
+import io
 import json
 import numpy as np
 import os
@@ -21,7 +23,7 @@ __all__ = [
     'LabeledPoemsSplitsDfContentReader', 'LabeledPoemsSplitsDfReader', 'LabeledPoemsIOWriter', 
     'BaseLabelsWriter', 'LabelsWriterStd', 'LabelsWriterKeyValue', 'LabelsWriterKeyValueMultiverse', 
     'LabelsWriterExplained', 'LabelsDecoderKeyValue', 'LabelsDecoderExplained', 'build_labeled_dfs_from_splits', 
-    'LabelsEstimator',
+    'build_datasets_for_encoder_decoder', 'LabelsEstimator',
 ]
 
 
@@ -641,6 +643,63 @@ def build_labeled_dfs_from_splits(splits_df:pd.DataFrame, labels_type:LabelsType
     valid_df = valid_df[~valid_empty_selector]
     
     return train_df, valid_df
+
+
+def build_datasets_for_encoder_decoder(
+    splits_df:pd.DataFrame, file_conf:PoemsFileConfig, label_func:Callable[[str], Dict[str, str]]
+) -> Tuple[Dataset, Dataset]:
+    """Construct the datasets needed to train a HuggingFace Encoder-Decoder using the data in `splits_df`.
+
+    Args:
+        splits_df: DataFrame that has one row by poem and assigns each one to an split. It must contain, at least, 
+            the following columns:
+                `POEM_LOCATION_DF_COL`: location specification of a poem, with the same format as the columns of the
+                    same name filled by `PoemsFileList` and `PoemsDf`.
+                'Split': it must have the value 'Train' or 'Validation' depending on whether the poem belongs to the
+                    training set or the validation set.
+            You'd normally use a DataFrame that has been previously stored as a csv by the notebook 
+            'txt_inputs_generator'.
+        file_conf: formatting options that must be applied to the poems before training.
+        label_func: function that receives the location specification of a poem as input and returns a dictionary
+            that contains the labels (values) assigned to each category (keys). The text corresponding to each 
+            categories is given by `label_type_to_str`.
+    Returns:
+        Tuple thats has the training set as the first element and the validation set as the second one.
+        Each of these two datasets has the columns 'text' (text of the poem) and 'labels_text' (labels as encoded
+        by `LabelsWriterExplained`).
+    """
+    splits_df = replace_location_placeholder(splits_df)
+    train_split_df = filter_splits_df(splits_df, LabelsType.All, 'Train')
+    valid_split_df = filter_splits_df(splits_df, LabelsType.All, 'Validation')
+    
+    readers = [LabeledPoemsSplitsDfReader(df, label_func) for df in (train_split_df, valid_split_df)]
+    encoded_dfs = []
+    labels_writer = LabelsWriterExplained()
+    
+    encoded_dfs = []
+    for reader in readers:
+        encoded_df_columns = {'text': [], 'labels_text': []}
+        for poem in reader:
+            with io.StringIO() as labels_io:
+                # This writes endofverse token, which shouldn't be needed for the encoder
+                labels_io_writer = PoemsIOWriter(labels_io, file_conf)  
+                labels_writer.write_labels(poem.labels, labels_io_writer)
+                labels_text = labels_io.getvalue()
+            with io.StringIO() as content_io:
+                content_io_writer = PoemsIOWriter(content_io, file_conf)
+                content_io_writer.write_poem(poem.poem_lines)
+                poem_text = content_io.getvalue()
+
+            encoded_df_columns['text'].append(poem_text)
+            encoded_df_columns['labels_text'].append(labels_text)
+
+        encoded_dfs.append(pd.DataFrame(encoded_df_columns))
+        
+    encoded_train_df, encoded_valid_df = encoded_dfs
+    train_ds = Dataset.from_pandas(encoded_train_df)
+    valid_ds = Dataset.from_pandas(encoded_valid_df)
+    
+    return train_ds, valid_ds
 
 
 class LabelsEstimator:
