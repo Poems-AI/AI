@@ -10,13 +10,13 @@ from poemsai.data import (
     PoemsFileConfig, PoemsIOWriter, VerseGrouping
 )
 from poemsai.trainer import PoemsTrainer
-from poemsai.torch_utils import get_positions_between
+from poemsai.torch_utils import freeze, get_positions_between
 import tempfile
 from transformers import default_data_collator, TextGenerationPipeline, Trainer, TrainingArguments
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Callable, Dict, List
+from typing import Callable, Dict, List, Optional
 
 
 __all__ = [
@@ -284,7 +284,8 @@ def get_compute_metrics_metadataless(**loss_init_kargs):
         preds, labels = eval_preds
         # preds have been already truncated (last item of the sequence), by 
         # preprocess_logits_for_metadataless_loss so we only need to shift the labels
-        loss = loss_fn(torch.Tensor(preds), torch.Tensor(labels[:, 1:]))
+        with torch.no_grad():
+            loss = loss_fn(torch.Tensor(preds), torch.Tensor(labels[:, 1:]))
         return {'Metadata-less val. loss': loss}
     
     return compute_metadataless_loss
@@ -451,12 +452,34 @@ class ConditionalGenLoss:
         gen_eop_token_id: id of the end of poem token in the generator vocabulary.
         gen_bov_token_id: id of the beginning of verse token in the generator vocabulary.
         gen_eov_token_id: id of the end of verse token in the generator vocabulary.
+        device: device, with Pytorch format, where the input tensors are expected to be. If needed, `clf` weights are 
+            moved to this device.
+        max_clf_input_tokens: maximum number of input tokens that `clf` can accept, including the batch dimension. 
+            When `clf` needs to process more that `max_clf_input_tokens`, its input is split in chunks that are passed 
+            independently to `clf` and finally the results are concatenated, so that the final output is the same but 
+            the memory needs are reduced at the expense of speed. 
+            You should use this parameters only if you suffer from out of memory errors.
+        max_clf_bs: maximum batch size that `clf` can accept. 
+            When `clf` needs to process more that `max_clf_bs`, its input is split in batches of `max_clf_bs` examples 
+            that are passed independently to `clf` and finally the results are concatenated, so that the final output 
+            is the same but the memory needs are reduced at the expense of speed. 
+            There are two common use cases for this parameter:
+            1. If you suffer from out of memory errors.
+            2. If `clf` is a classifier with a causal language model backbone, like GPT-2, passing `max_clf_bs = 1` is 
+            recommended. Otherwise, the inputs will be padded, which is not ideal, because `clf` takes the last 
+            position as the classification token instead of the last not padded position (only when we, like here, 
+            pass `inputs_embeds` instead of `input_ids`).
     """
-    def __init__(self, clf:nn.Module, clf_tokenizer, gen_tokenizer, cat:LabelsType, 
-                 labels_decoder:BaseLabelsDecoder, file_config:PoemsFileConfig, gen_eop_token_id:int, 
-                 gen_bov_token_id:int=None, gen_eov_token_id:int=None):
+    def __init__(
+        self, clf:nn.Module, clf_tokenizer, gen_tokenizer, cat:LabelsType, labels_decoder:BaseLabelsDecoder, 
+        file_config:PoemsFileConfig, gen_eop_token_id:int, gen_bov_token_id:int=None, gen_eov_token_id:int=None, 
+        device=None, max_clf_input_tokens:Optional[int]=None, max_clf_bs:Optional[int]=None,
+    ):
         self.clf = clf
         self.clf.eval()
+        freeze(self.clf)
+        if device is not None:
+            self.clf.to(device)
         self.clf_tokenizer = clf_tokenizer
         self.gen_tokenizer = gen_tokenizer
         self.cat = cat
@@ -465,12 +488,15 @@ class ConditionalGenLoss:
         self.gen_eop_token_id = gen_eop_token_id
         self.gen_bov_token_id = gen_bov_token_id
         self.gen_eov_token_id = gen_eov_token_id
+        self.max_clf_input_tokens = max_clf_input_tokens
+        self.max_clf_bs = max_clf_bs
         self.clf_whitespace_token_id = clf_tokenizer.encode(' ')[0]
         self.clf_eol_token_id = clf_tokenizer.encode('\n')[0]
         self.inner_loss = nn.CrossEntropyLoss(reduction='sum')
         
         gen_vocab_sz = len(self.gen_tokenizer)
-        self._add_missing_entries_to_clf_embedding(clf, gen_vocab_sz)
+        with torch.no_grad():
+            self._add_missing_entries_to_clf_embedding(clf, gen_vocab_sz)
         
     def _add_missing_entries_to_clf_embedding(self, clf, gen_vocab_sz):
         clf_emb_w = clf.get_input_embeddings().weight
@@ -486,7 +512,7 @@ class ConditionalGenLoss:
         seq_len = single_gen_output.shape[0]
         split_idxs = (single_gen_target == self.gen_eop_token_id).nonzero().view(-1)
         if split_idxs.shape[0] == 0:
-            return None, None
+            return None, None, None
 
         split_sizes = (
             [split_idxs[0] + 1]
@@ -495,20 +521,24 @@ class ConditionalGenLoss:
         )
         # The first split is most likely the end of a poem, so it doesn't have labels and we ignore it
         poems_tensor_list = torch.split(single_gen_output, split_sizes, dim=0)[1:]
+        seq_lengths = split_sizes[1:]
+        non_empty_seq_idxs = [i for i, sl in enumerate(seq_lengths) if sl > 0]
+        seq_lengths = [seq_lengths[i] for i in non_empty_seq_idxs]
+        poems_tensor_list = [poems_tensor_list[i] for i in non_empty_seq_idxs]
         # size: (n_poems in single_gen_target - 1) x (max_seq_len of poems in single_gen_target) x vocab_sz
         poems_tensor = torch.nn.utils.rnn.pad_sequence(poems_tensor_list, batch_first=True, padding_value=float("-inf"))
-        assert poems_tensor.requires_grad
 
         # Set the pad_token_id as the max logit for the padded positions
         clf_pad_token_id = self.clf_tokenizer.pad_token_id
-        for i, poem_len in enumerate(split_sizes[1:]):
-            poems_tensor[i, poem_len:, clf_pad_token_id] = 1e6
-
+        for i, poem_len in enumerate(seq_lengths):
+            poems_tensor[i, poem_len:, clf_pad_token_id] = 1e12 if poems_tensor.dtype == torch.float32 else 1e4
+   
         labels_by_poem = self.labels_decoder.decode_labels(
             self.gen_tokenizer.decode(single_gen_target[split_sizes[0]:].tolist()), self.file_config
         )
-
-        return poems_tensor, labels_by_poem
+        labels_by_poem = [labels_by_poem[i] for i in non_empty_seq_idxs]
+        
+        return poems_tensor, labels_by_poem, seq_lengths
 
     def _replace_special_tokens_for_clf(self, gen_output):
         gen_preds = gen_output.argmax(dim=-1)
@@ -546,27 +576,43 @@ class ConditionalGenLoss:
         # should be skipped in that case.
         bs = gen_output.shape[0]
         clf_emb_w = self.clf.get_input_embeddings().weight
-        loss = torch.tensor(0., device=gen_output.device, requires_grad=True)
+        loss = gen_output.new_zeros([])
         gen_output = self._replace_special_tokens_for_clf(gen_output)
         n_poems = 0
+        # Set high values if maxima are not set
+        max_clf_input_tokens = self.max_clf_input_tokens if self.max_clf_input_tokens is not None else 2**40
+        max_clf_bs = self.max_clf_bs if self.max_clf_bs is not None else 2**30
         
         for i in range(bs): 
-            poems_tensor, labels_by_poem = self._split_by_poem(gen_output[i], gen_target[i])
+            poems_tensor, labels_by_poem, seq_lengths = self._split_by_poem(gen_output[i], gen_target[i])
 
             if poems_tensor is not None:
-                clf_emb_out = F.softmax(poems_tensor, dim=-1) @ clf_emb_w
-                assert clf_emb_out.requires_grad
-                # size: (n poems in batch[i] - 1) x n classes
-                clf_preds = self.clf(input_embeds=clf_emb_out).logits
 
+                if (self.max_clf_input_tokens is None) and (self.max_clf_bs is None):
+                    clf_emb_out = F.softmax(poems_tensor, dim=-1) @ clf_emb_w
+                    # size: (n poems in batch[i] - 1) x n classes
+                    clf_preds = self.clf(inputs_embeds=clf_emb_out).logits
+                else:
+                    n_allowed_examples_by_clf_input = max(1, min(max_clf_input_tokens // poems_tensor.shape[1], max_clf_bs))
+                    clf_preds = None
+                    for j in range(0, poems_tensor.shape[0], n_allowed_examples_by_clf_input):
+                        max_seq_length = poems_tensor.shape[1]
+                        if n_allowed_examples_by_clf_input == 1:
+                            # we don't need padding when the classifier input has batch size 1
+                            max_seq_length = seq_lengths[j]
+                        clf_emb_out = F.softmax(poems_tensor[j:j+n_allowed_examples_by_clf_input, :max_seq_length], dim=-1) @ clf_emb_w
+                        clf_out = self.clf(inputs_embeds=clf_emb_out).logits
+                        clf_preds = clf_out if clf_preds is None else torch.cat((clf_preds, clf_out))
+                    
                 non_empty_label_idxs = []
 
                 clf_label_ids = []
-                for i, labels_by_cat in enumerate(labels_by_poem):
+                for j, labels_by_cat in enumerate(labels_by_poem):
                     label = labels_by_cat[label_type_to_str(self.cat)]
-                    if label == '': continue
+                    if (label == '') or (label not in self.clf.config.label2id):
+                        continue
                     clf_label_ids.append(self.clf.config.label2id[label])
-                    non_empty_label_idxs.append(i)
+                    non_empty_label_idxs.append(j)
                 
                 if len(clf_label_ids) > 0:
                     clf_preds = clf_preds[non_empty_label_idxs]
@@ -579,4 +625,3 @@ class ConditionalGenLoss:
             #    poems_tensor = output[i]
             
         return loss/n_poems if n_poems > 0 else loss
-    # TODO: WATCHOUT, DON'T FORGET TO SHIFT TARGET IN CALLING PLACE!!!!!!!!!!!!

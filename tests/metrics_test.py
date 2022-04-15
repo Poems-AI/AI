@@ -199,11 +199,11 @@ class FakeClf(nn.Module):
             new_embeddings.weight[:n, :] = old_embeddings.weight[:n, :]
         self.embedding = new_embeddings
     
-    def forward(self, input_ids=None, input_embeds=None):
-        if input_embeds is None:
+    def forward(self, input_ids=None, inputs_embeds=None):
+        if inputs_embeds is None:
             assert input_ids is not None
-            input_embeds = self.embedding(input_ids)
-        out = self.linear(input_embeds[:, 0])
+            inputs_embeds = self.embedding(input_ids)
+        out = self.linear(inputs_embeds[:, 0])
         return FakeClfOut(logits=out)
 
 
@@ -275,10 +275,13 @@ def test_conditional_loss():
     gen_eov_token_id = gen_tokenizer.encode(EOV)[0]
     gen_eop_token_id = gen_tokenizer.encode(EOP)[0]
     
-    cond_loss = ConditionalGenLoss(
+    cond_loss_args = [
         clf, clf_tokenizer, gen_tokenizer, LabelsType.Forms, LabelsDecoderExplained(), file_config, 
         gen_eop_token_id, gen_bov_token_id, gen_eov_token_id,
-    )
+    ]
+    cond_loss = ConditionalGenLoss(*cond_loss_args)
+    cond_loss_max_tokens = ConditionalGenLoss(*cond_loss_args, max_clf_input_tokens=3)
+    cond_loss_max_bs = ConditionalGenLoss(*cond_loss_args, max_clf_bs=1)
     
     # First words of gen_output:    bla, ble, bli, <EOV>, This
     # Idxs in vocab                  19   20   21   26     10
@@ -291,5 +294,9 @@ def test_conditional_loss():
     expected_loss = F.cross_entropy(expected_clf_logits, cond_loss_target)
     
     actual_loss = cond_loss(gen_output, gen_target)
+    actual_loss_max_tokens = cond_loss_max_tokens(gen_output, gen_target)
+    actual_loss_max_bs = cond_loss_max_bs(gen_output, gen_target)
     
     assert torch.isclose(expected_loss, actual_loss)
+    assert torch.isclose(expected_loss, actual_loss_max_tokens)
+    assert torch.isclose(expected_loss, actual_loss_max_bs)

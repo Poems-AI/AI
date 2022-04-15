@@ -44,12 +44,13 @@ If a model was perfectly conditioned, we should expect it to score for the condi
 | Trained with a verse inserted for each label at the beginning of the poem, with key: value format, '?' if not available | 3.3454 | 4 | 3.0966 | 6.6060 | 0.0324 | 3.1880 |  0.4276 | 4.5001 | 0.1989 | 2.9276 | 0.4720 |
 | Trained with a description of labels verse at the beginning of the poem, '?' for labels not available | 3.3396 | 4 | 3.0975 | 6.4872 | 0.0462 | 3.0526 | 0.4554 | 4.4573 | 0.1849 | 2.8412 | 0.4794 |
 | Trained with a description of labels verse at the beginning of the poem, no description for categories not available | 3.3486 | 3 | 3.1779 | 6.3701 | 0.0610 | 2.8156 | 0.4653 | 4.4168 | 0.2021 | 2.7301 | 0.5065 |
-| Trained with a description of labels verse at the beginning of the poem, missing labels filled by classifiers | 3.3355 | 4 | 3.0313 | 6.3723 | 0.03245 | 2.5009 | 0.5268 | 4.3886 | 0.1980 | 2.8035 | 0.4963 |
-
-
+| <span style='margin-left: 1em'>+ conditional loss (w=1)</span> | 3.4068  | 5 | 3.1848(*2) | 4.7267 | 0.2153 | 0.7637 | 0.8829 | 3.7641 | 0.3011 | 2.4828 | 0.5597 |
+| <span style='margin-left: 1em'>+ conditional loss (w=0.5)</span> | 3.3951 | 5 | 3.1447(*2) | 4.2007 | 0.2861 | 1.0246 | 0.8214 | 3.4086 | 0.3576 | 2.2528 | 0.5890 |
+| Trained with a description of labels verse at the beginning of the poem, missing labels filled by classifiers | 3.3355 | 4 | 3.0313 | 6.3723 | 0.0325 | 2.5009 | 0.5268 | 4.3886 | 0.1980 | 2.8035 | 0.4963 |
 
 
 Legend:
 - *1: some poems have only topic as label and others have only form as label, so some examples have a topic in the first position and other examples have the form in the first position of the sequence.
+- *2: the training loss doesn't include the conditional loss to be comparable with the rest of the configurations.
 
 Several models score surprisingly well for the Topic conditional loss/accuracy A. After looking at the generated text in those cases, most likely it's because just repeating the topic inside the poem gives valuable information to the classifier.
