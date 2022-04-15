@@ -1,7 +1,8 @@
 import torch
+import torch.nn as nn
 
 
-__all__ = ['masked_min', 'get_positions_between']
+__all__ = ['masked_min', 'get_positions_between', 'freeze']
 
 
 def masked_min(t, mask, axis=None, inf_val=1000000000):
@@ -22,3 +23,7 @@ def get_positions_between(t, ini_value, end_value):
     slice_begin_positions = ini_positions
     slice_end_positions = slice_end_positions
     return slice_begin_positions, slice_end_positions
+
+
+def freeze(m:nn.Module):
+    for p in m.parameters(): p.requires_grad = False

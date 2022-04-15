@@ -486,7 +486,7 @@ class LabelsWriterExplained(BaseLabelsWriter):
 class BaseLabelsDecoder(ABC):
     """Child classes must define a method of extracting the labels from a poem(s) text."""
     @abstractmethod
-    def decode_labels(self, text:str, file_config:PoemsFileConfig) -> Dict[LabelsType, str]:
+    def decode_labels(self, text:str, file_config:PoemsFileConfig) -> List[Dict[LabelsType, str]]:
         pass
 
 
@@ -495,8 +495,9 @@ class LabelsDecoderKeyValue(BaseLabelsDecoder):
     
     It assumes that `file_config.end_of_verse_token` and `file_config.end_of_poem_token` are
     defined (not empty).
+    One of the labels of the last poem could appear truncated if it's at the end of `text`.
     """
-    def decode_labels(self, text:str, file_config:PoemsFileConfig) -> Dict[LabelsType, str]:
+    def decode_labels(self, text:str, file_config:PoemsFileConfig) -> List[Dict[LabelsType, str]]:
         labels = []
         text = text.replace(file_config.beginning_of_verse_token, '')
         first_verse_by_poem = [
@@ -533,8 +534,9 @@ class LabelsDecoderExplained(BaseLabelsDecoder):
     
     It assumes that `file_config.end_of_verse_token` and `file_config.end_of_poem_token` are
     defined (not empty).
+    One of the labels of the last poem could appear truncated if it's at the end of `text`.
     """
-    def decode_labels(self, text:str, file_config:PoemsFileConfig) -> Dict[LabelsType, str]:
+    def decode_labels(self, text:str, file_config:PoemsFileConfig) -> List[Dict[LabelsType, str]]:
         labels = []
         text = text.replace(file_config.beginning_of_verse_token, '')
         first_verse_by_poem = [
