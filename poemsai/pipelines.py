@@ -48,6 +48,7 @@ class EncoderDecoderText2TextGenerationPipeline(Text2TextGenerationPipeline):
             inputs = self._parse_and_tokenize(
                 inputs['condition'], truncation=truncation, tokenizer=self.tokenizer, **kwargs
             )
-            inputs['decoder_input_ids'] = decoder_inputs['input_ids']
-            inputs['decoder_attention_mask'] = decoder_inputs['attention_mask']
+            if decoder_inputs['input_ids'].shape[-1] > 0:
+                inputs['decoder_input_ids'] = decoder_inputs['input_ids']
+                inputs['decoder_attention_mask'] = decoder_inputs['attention_mask']
             return inputs
