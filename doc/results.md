@@ -47,7 +47,7 @@ If a model was perfectly conditioned, we should expect it to score for the condi
 | <span style='margin-left: 1em'>+ conditional loss (w=1)</span> | 3.4068  | 5 | 3.1848(*2) | 4.7267 | 0.2153 | 0.7637 | 0.8829 | 3.7641 | 0.3011 | 2.4828 | 0.5597 |
 | <span style='margin-left: 1em'>+ conditional loss (w=0.5)</span> | 3.3951 | 5 | 3.1447(*2) | 4.2007 | 0.2861 | 1.0246 | 0.8214 | 3.4086 | 0.3576 | 2.2528 | 0.5890 |
 | Trained with a description of labels verse at the beginning of the poem, missing labels filled by classifiers | 3.3355 | 4 | 3.0313 | 6.3723 | 0.0325 | 2.5009 | 0.5268 | 4.3886 | 0.1980 | 2.8035 | 0.4963 |
-
+| Encoder-decoder distilbert-gpt2, trained with a description of labels fed to encoder, '?' for labels not available | 3.3557 | 2 | 3.1269 | 7.1540 | 0.0108 | 6.5482 | 0.0060 | 4.4718 | 0.1907 | 3.5240 | 0.3789 |
 
 Legend:
 - *1: some poems have only topic as label and others have only form as label, so some examples have a topic in the first position and other examples have the form in the first position of the sequence.
