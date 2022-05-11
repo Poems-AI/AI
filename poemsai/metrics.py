@@ -1,6 +1,5 @@
 import copy
 from datasets import Dataset, load_dataset, load_metric
-import gc
 from happytransformer import fine_tuning_util
 import io
 import numpy as np
@@ -9,10 +8,13 @@ from poemsai.data import (
     BaseLabelsDecoder, BaseLabelsWriter, label_type_to_str, LabelsType, LabelsWriterStd, 
     PoemsFileConfig, PoemsIOWriter, VerseGrouping
 )
+from poemsai.pipelines import EncoderDecoderText2TextGenerationPipeline
 from poemsai.trainer import PoemsTrainer
 from poemsai.torch_utils import freeze, get_positions_between
 import tempfile
-from transformers import default_data_collator, TextGenerationPipeline, Trainer, TrainingArguments
+from transformers import (
+    default_data_collator, TextGenerationPipeline, Trainer, TrainingArguments
+)
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -71,7 +73,7 @@ def preprocess_logits_for_accuracy(logits, labels):
 
 
 def compute_lm_accuracy(eval_preds):
-    """Computes the accuracy given the predictions and labels, contained in `eval_preds`.
+    """Compute the accuracy given the predictions and labels, contained in `eval_preds`.
     
     It assumes the logits have been reduced with argmax(-1) by `preprocess_logits_for_accuracy`.
     """
@@ -86,7 +88,7 @@ def compute_lm_accuracy(eval_preds):
 def eval_model_with_metrics(model, input_filepath, tokenizer, compute_metrics=compute_lm_accuracy,
                             preprocess_logits_for_metrics=preprocess_logits_for_accuracy,
                             bs=16):
-    "Evaluates `model` straightaway with `compute_metrics` using the data contained in `input_filepath`."
+    "Evaluate `model` straightaway with `compute_metrics` using the data contained in `input_filepath`."
     datasets = load_dataset("text", data_files={"eval": input_filepath})
     n_procs = 1
     mlm = False
@@ -108,11 +110,80 @@ def eval_model_with_metrics(model, input_filepath, tokenizer, compute_metrics=co
     return trainer.evaluate()
 
 
+class SimpleMetadataLessLoss:
+    """Wrapper that masks the tokens of the target that are considered metadata before passing them to `inner_loss`.
+    
+    It's a simplified (and faster) version of `MetadataLessLoss` that assumes that the only metadata tokens that appear 
+    in the target are `begin_verse_id` and/or `end_verse_id` and/or `end_poem_id`.
+
+    Args:
+        inner_loss: wrapped loss function.
+        begin_verse_id: id of the beginning of verse token.
+        end_verse_id: id of the end of verse token.
+        end_poem_id: id of the end of poem token.
+        ignore_index: id that identifies in the target the tokens that `inner_loss` must ignore to compute the loss.
+        flatten_inner_loss_args: if `True`, the predictions and the masked target are flattened before passing them
+            to `inner_loss`.
+    """
+    def __init__(self, inner_loss:Callable, begin_verse_id=None, end_verse_id=None, 
+                 end_poem_id=None, ignore_index=-100, flatten_inner_loss_args=False):
+        self.inner_loss = inner_loss
+        self.begin_verse_id = begin_verse_id
+        self.end_verse_id = end_verse_id
+        self.end_poem_id = end_poem_id
+        self.ignore_index = ignore_index
+        self.flatten_inner_loss_args = flatten_inner_loss_args
+
+    def __call__(self, preds, target):
+        target = target.clone()
+
+        mask = None
+        if self.end_verse_id is not None:
+            mask = (target == self.end_poem_id) | (target == self.begin_verse_id)
+        else:
+            mask = target == self.end_poem_id
+
+        if mask is not None:
+            target[mask] = self.ignore_index
+
+        if self.flatten_inner_loss_args:
+            preds = preds.view(-1, preds.shape[-1])
+            target = target.view(-1)
+
+        return self.inner_loss(preds, target)
+
+
 class MetadataLessLoss:
-    "Masks the tokens of the target that are considered metadata before passing them to `inner_loss`."
+    """Wrapper that masks the tokens of the target that are considered metadata before passing them to `inner_loss`.
+    
+    It doesn't mask the `end_verse_id` in order to measure the correctness of the separation in verses of the 
+    predictions. If `end_verse_id` is None, the `begin_verse_id` token isn't masked for the same reason.
+    It always masks:
+    1. The `end_poem_id` tokens.
+    2. Every token between an `end_verse_id` and the next `begin_verse_id`.
+    3. Every token between an `end_poem_id` and the first `begin_verse_id` of the next poem.
+    4. Every token between the last `end_verse_id` of a poem and the `end_poem_id` token.
+
+    Args:
+        inner_loss: wrapped loss function.
+        begin_verse_id: id of the beginning of verse token.
+        end_verse_id: id of the end of verse token.
+        end_poem_id: id of the end of poem token.
+        ignore_index: id that identifies in the target the tokens that `inner_loss` must ignore to compute the loss.
+        flatten_inner_loss_args: if `True`, the predictions and the masked target are flattened before passing them
+            to `inner_loss`.
+        n_initial_verses_to_ignore: number of initial verses of each poem that must be ignored to compute the loss.
+            This is useful when some kind of labels or tags have been inserted as independent verses at the beginning 
+            of each poem to condition a causal language model but you don't want the predictions for those positions 
+            to be taken into account to compute the loss.
+        pos_0_is_begin_poem: indicate that the first token of each example is expected to be the first token of a poem.
+            When it's `False`, the tokens that appear before the first `begin_verse_id` (or `end_verse_id` if
+             `begin_verse_id` is not given) are ignored, because it's not possible to know if they are metadata 
+             (appear between the end of a verse and the beginning of the next one) or not.
+    """
     def __init__(self, inner_loss:Callable, begin_verse_id=None, end_verse_id=None, 
                  end_poem_id=None, ignore_index=-100, flatten_inner_loss_args=False,
-                 n_initial_verses_to_ignore=0):
+                 n_initial_verses_to_ignore=0, pos_0_is_begin_poem=False):
         self.inner_loss = inner_loss
         self.begin_verse_id = begin_verse_id
         self.end_verse_id = end_verse_id
@@ -120,6 +191,7 @@ class MetadataLessLoss:
         self.ignore_index = ignore_index
         self.flatten_inner_loss_args = flatten_inner_loss_args
         self.n_initial_verses_to_ignore = n_initial_verses_to_ignore
+        self.pos_0_is_begin_poem = pos_0_is_begin_poem
 
     def __call__(self, preds, target):
         target = target.clone()
@@ -168,7 +240,7 @@ class MetadataLessLoss:
                 DONT_KNOW = -1
                 # At the beginning we don't know if we start at the beginning of a poem
                 # because a poem may have been split into two sequences
-                n_verses_completed = DONT_KNOW
+                n_verses_completed = 0 if self.pos_0_is_begin_poem else DONT_KNOW
                 for j in range(seq_len):
                     if target[i][j] == self.end_poem_id:
                         if self.n_initial_verses_to_ignore > 0:
@@ -265,18 +337,23 @@ class MetadataLessLossFast:
         return self.inner_loss(preds, target)
 
 
-def preprocess_logits_for_metadataless_loss(logits, labels):
+def preprocess_logits_for_metadataless_loss(logits, labels, ignore_idx=-100):    
     labels = labels[:, 1:]
     logits = logits[:, :-1]
+    if (ignore_idx is not None) and (ignore_idx < 0):
+        labels = labels.clone()
+        # torch.gather will fail if an index is lower than 0
+        # The gathered logits for the padded positions are irrelevant, so we can take the first
+        labels[labels == ignore_idx] = 0
     return -torch.gather(F.log_softmax(logits, dim=-1), -1, labels[..., None]).squeeze(-1)
 
 
-def get_compute_metrics_metadataless(**loss_init_kargs):
+def get_compute_metrics_metadataless(loss_cls=MetadataLessLoss, **loss_init_kargs):
     "It returns a functon that computes the `MetadataLessLoss` like a HuggingFace metric."
     ignore_index = -100
     def _inner_loss(preds, target): 
         return preds[target != ignore_index].mean()
-    loss_fn = MetadataLessLoss(_inner_loss, ignore_index=ignore_index, **loss_init_kargs)
+    loss_fn = loss_cls(_inner_loss, ignore_index=ignore_index, **loss_init_kargs)
     
     def compute_metadataless_loss(eval_preds):
         # preds just contains the value of the log softmax of the logits for the entries given
@@ -292,9 +369,10 @@ def get_compute_metrics_metadataless(**loss_init_kargs):
 
 
 class ConditionalGenEvaluator:
-    def __init__(self, gen_model, gen_tokenizer, clf_model, clf_tokenizer, 
-                 file_conf:PoemsFileConfig, cat_evaluated:str, all_cats_ordered:List[str]=None, 
-                 labels_writer:BaseLabelsWriter=None, device=-1):
+    def __init__(
+        self, gen_model, gen_tokenizer, clf_model, clf_tokenizer, file_conf:PoemsFileConfig, cat_evaluated:str, 
+        all_cats_ordered:List[str]=None, labels_writer:BaseLabelsWriter=None, device=-1, gen_decoder_tokenizer=None,
+    ):
         self.clf_model = clf_model
         self.clf_tokenizer = clf_tokenizer
         self.file_conf = copy.deepcopy(file_conf)
@@ -308,7 +386,16 @@ class ConditionalGenEvaluator:
             '`all_cats_ordered` must include the category evaluated by this object'
         )
         self.labels_writer = labels_writer if labels_writer is not None else LabelsWriterStd()
-        self.gen_pipeline = TextGenerationPipeline(model=gen_model, tokenizer=gen_tokenizer, device=device)
+        self.gen_decoder_tokenizer = gen_decoder_tokenizer
+        if gen_model.config.is_encoder_decoder:
+            # If the tokenizer of the decoder is not given, we assume it's the same as the encoder one
+            if self.gen_decoder_tokenizer is None:
+                self.gen_decoder_tokenizer = gen_tokenizer
+            self.gen_pipeline = EncoderDecoderText2TextGenerationPipeline(
+                model=gen_model, tokenizer=gen_tokenizer, device=device, decoder_tokenizer=self.gen_decoder_tokenizer
+            )
+        else:
+            self.gen_pipeline = TextGenerationPipeline(model=gen_model, tokenizer=gen_tokenizer, device=device)
     
     def _get_labels(self) -> List[str]:
         return list(self.clf_model.config.label2id.keys())
@@ -338,12 +425,14 @@ class ConditionalGenEvaluator:
     
     def eval_with_labels_as_prompt(self, min_samples=1000):
         labels = self._get_labels()
-        text = [self._label_to_formatted_str(l) for l in labels]
+        inputs = [self._label_to_formatted_str(l) for l in labels]
+        if self.gen_pipeline.model.config.is_encoder_decoder:
+            inputs = [{'condition': labels_text, 'prompt': ''} for labels_text in inputs]
         if len(labels) < min_samples:
             int_ratio = round(min_samples / len(labels))
             labels = labels * int_ratio
-            text = text * int_ratio
-        return self._evaluate(text, labels)
+            inputs = inputs * int_ratio
+        return self._evaluate(inputs, labels)
     
     def eval_with_seq_fragment_as_prompt(self, labeled_df, seq_len_pct=0.25, max_prompt_len=100):
         labels = self._get_labels()
@@ -368,7 +457,13 @@ class ConditionalGenEvaluator:
                 end_idx = formatted_text.index(' ', end_idx)
             return formatted_text[:end_idx]
 
-        text = labeled_df.apply(lambda row: self._label_to_formatted_str(row.labels) + _format_text(row.text), axis=1)
+        if self.gen_pipeline.model.config.is_encoder_decoder:
+            text = labeled_df.apply(
+                lambda row: {'condition': self._label_to_formatted_str(row.labels), 'prompt': _format_text(row.text)}, 
+                axis=1
+            )
+        else:
+            text = labeled_df.apply(lambda row: self._label_to_formatted_str(row.labels) + _format_text(row.text), axis=1)
         return self._evaluate(text.to_list(), labeled_df.labels.to_list())
     
     def _replace_special_tokens(self, text:str):
@@ -376,10 +471,26 @@ class ConditionalGenEvaluator:
         text = text.replace(self.file_conf.end_of_poem_token, '')
         text = text.replace(self.file_conf.end_of_verse_token, '\n')
         return text
-    
-    def _evaluate(self, prompts, labels):
+
+    def _decode_generated_text(self, generated_sequences:List):
+        if isinstance(self.gen_pipeline, TextGenerationPipeline):
+            tokenizer = self.gen_pipeline.tokenizer
+            out_text = [
+                tokenizer.decode(seq_token_ids['generated_token_ids'][0])
+                for seq_token_ids in generated_sequences
+            ]
+        else:
+            tokenizer = self.gen_decoder_tokenizer
+            out_text = [
+                tokenizer.decode(seq_token_ids['generated_token_ids']['output_ids'][0])
+                for seq_token_ids in generated_sequences
+            ]
+        out_text = [self._replace_special_tokens(t) for t in out_text]
+        return out_text         
+
+    def _evaluate(self, gen_inputs, labels):
         out_sequences = self.gen_pipeline(
-            prompts, 
+            gen_inputs, 
             min_length=10,
             #return_full_text=False,
             #return_text=False,
@@ -392,18 +503,16 @@ class ConditionalGenEvaluator:
             no_repeat_ngram_size=0,
             top_p=0.98,
             return_tensors=True,
-        )        
-        # Convert to text and delete the prompts from out_sequences
-        # We tokenize the prompts first because some of their characters may disappear in the decoded out_text
-        #tokenized_prompts = self.gen_pipeline.tokenizer(prompts)['input_ids']
-        out_text = [self.gen_pipeline.tokenizer.decode(seq_token_ids['generated_token_ids'][0])
-                    for seq_token_ids in out_sequences]
-        out_text = [self._replace_special_tokens(t) for t in out_text]
+        )
+        out_text = self._decode_generated_text(out_sequences)
         
         clf_input_df = pd.DataFrame(columns=['text', 'labels'])
         # Delete the labels from out_text before evaluation
         n_total_cats = 1 if self.all_cats_ordered is None else len(self.all_cats_ordered)
-        n_verses_for_labels = self.labels_writer.num_verses_needed(n_total_cats)
+        n_verses_for_labels = (
+            0 if self.gen_pipeline.model.config.is_encoder_decoder 
+            else self.labels_writer.num_verses_needed(n_total_cats)
+        )
         clf_input_df['text'] = ['\n'.join(seq.split('\n')[n_verses_for_labels:]) for seq in out_text]
         clf_input_df['labels'] = labels
 
